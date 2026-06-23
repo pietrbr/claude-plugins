@@ -105,6 +105,10 @@ claude plugin uninstall llm-wiki
 
 This removes the plugin and its dependency cache. Your wiki data in `~/Documents/LLM-wiki/` is preserved.
 
+## Acknowledgments
+
+Originally created by [ekadetov](https://github.com/ekadetov); based on Andrej Karpathy's LLM Wiki pattern.
+
 ## License
 
 MIT
