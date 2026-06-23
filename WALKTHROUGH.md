@@ -42,7 +42,7 @@ Six operations, invoked from a Claude Code session:
 
 ### Wiki structure
 
-Every wiki lives at `~/ObsidianVault/03-Resources/<name>/`:
+Every wiki lives at `~/Documents/LLM-wiki/<name>/`:
 
 ```
 <name>/
@@ -140,7 +140,7 @@ Every operation ends with a git commit to the Obsidian vault. This gives you a f
 
 - **Node.js 18+** — for automatic dependency installation
 - **Git** — for auto-committing wiki changes, with `user.name` and `user.email` configured
-- **Obsidian vault** at `~/ObsidianVault/` with a `03-Resources/` directory
+- **Obsidian vault** at `~/Documents/LLM-wiki/` (created automatically on first `init`)
 
 Verify before installing:
 
@@ -148,7 +148,7 @@ Verify before installing:
 node --version          # should be 18+
 git --version           # should be 2.x
 git config user.name    # should return your name
-ls ~/ObsidianVault/03-Resources/
+ls ~/Documents/LLM-wiki/
 ```
 
 ### Install
@@ -197,7 +197,7 @@ Work through these steps in order. Each step builds on the previous one.
 
 **What happens:**
 
-1. Creates `~/ObsidianVault/03-Resources/test-wiki/` with `raw/articles/`, `raw/attachments/`, `wiki/queries/`, and `outputs/reports/`
+1. Creates `~/Documents/LLM-wiki/test-wiki/` with `raw/articles/`, `raw/attachments/`, `wiki/queries/`, and `outputs/reports/`
 2. Writes `CLAUDE.md` with the full schema
 3. Writes `wiki/index.md` with an empty catalog template
 4. Writes `log.md` with an empty log template
@@ -209,10 +209,10 @@ Work through these steps in order. Each step builds on the previous one.
 **Verify from terminal:**
 
 ```bash
-ls -la ~/ObsidianVault/03-Resources/test-wiki/
-cat ~/ObsidianVault/03-Resources/test-wiki/CLAUDE.md
-cat ~/ObsidianVault/03-Resources/test-wiki/wiki/index.md
-git -C ~/ObsidianVault log --oneline -1
+ls -la ~/Documents/LLM-wiki/test-wiki/
+cat ~/Documents/LLM-wiki/test-wiki/CLAUDE.md
+cat ~/Documents/LLM-wiki/test-wiki/wiki/index.md
+git -C ~/Documents/LLM-wiki log --oneline -1
 ```
 
 **Expected:**
@@ -229,7 +229,7 @@ git -C ~/ObsidianVault log --oneline -1
 First, create a test source:
 
 ```bash
-cat > ~/ObsidianVault/03-Resources/test-wiki/raw/articles/2026-04-05-test-article.md << 'EOF'
+cat > ~/Documents/LLM-wiki/test-wiki/raw/articles/2026-04-05-test-article.md << 'EOF'
 # The History of Markdown
 
 John Gruber created Markdown in 2004 with contributions from Aaron Swartz.
@@ -241,7 +241,7 @@ EOF
 Then ingest it. Change to the wiki root first so active wiki detection finds it:
 
 ```bash
-cd ~/ObsidianVault/03-Resources/test-wiki
+cd ~/Documents/LLM-wiki/test-wiki
 ```
 
 ```
@@ -261,7 +261,7 @@ cd ~/ObsidianVault/03-Resources/test-wiki
 ```bash
 ls raw/articles/
 cat log.md
-git -C ~/ObsidianVault log --oneline -3
+git -C ~/Documents/LLM-wiki log --oneline -3
 ```
 
 **Expected:**
@@ -295,7 +295,7 @@ git -C ~/ObsidianVault log --oneline -3
 ls wiki/
 cat wiki/index.md
 cat log.md
-git -C ~/ObsidianVault log --oneline -3
+git -C ~/Documents/LLM-wiki log --oneline -3
 ```
 
 **Expected:**
@@ -345,7 +345,7 @@ This is the primary workflow for building up a wiki from web research: clip or f
 
 ```bash
 cat log.md    # should have a query entry
-git -C ~/ObsidianVault log --oneline -3
+git -C ~/Documents/LLM-wiki log --oneline -3
 ```
 
 **Filing answers back:**
@@ -379,7 +379,7 @@ Answers are automatically filed to `wiki/queries/<slug>.md`. Then the plugin off
 ```bash
 cat log.md    # should have a lint entry with issue count
 ls outputs/reports/
-git -C ~/ObsidianVault log --oneline -3
+git -C ~/Documents/LLM-wiki log --oneline -3
 ```
 
 After a fresh ingest of one small article, lint will likely find a few orphan pages or missing sections. That's normal and expected.
@@ -388,7 +388,7 @@ After a fresh ingest of one small article, lint will likely find a few orphan pa
 
 ### Step 6: Open in Obsidian
 
-Open Obsidian and navigate to `03-Resources/test-wiki/`.
+Open the `~/Documents/LLM-wiki/` vault in Obsidian and navigate to `test-wiki/`.
 
 **Graph view:** Open the graph view (Ctrl/Cmd+G). You should see interconnected nodes for each wiki page. Isolated nodes are orphans that lint would flag.
 
@@ -396,7 +396,7 @@ Open Obsidian and navigate to `03-Resources/test-wiki/`.
 
 ````
 ```dataview
-TABLE date, type FROM "03-Resources/test-wiki/wiki"
+TABLE date, type FROM "test-wiki/wiki"
 SORT date DESC
 ```
 ````
@@ -411,13 +411,13 @@ This lists all wiki pages with their date and type, sorted newest first. Change 
 
 Install the [Obsidian Web Clipper](https://obsidian.md/clipper) browser extension. In its settings:
 
-- **Destination folder:** `03-Resources/<wiki-name>/raw/articles`
+- **Destination folder:** `<wiki-name>/raw/articles`
 - **Filename template:** `{{date:YYYY-MM-DD}}-{{title}}`
 
 After clipping an article, run:
 
 ```
-/llm-wiki:wiki ingest ~/ObsidianVault/03-Resources/<wiki-name>/raw/<clipped-file>.md
+/llm-wiki:wiki ingest ~/Documents/LLM-wiki/<wiki-name>/raw/<clipped-file>.md
 ```
 
 ### Graph view as a visual lint
@@ -429,13 +429,13 @@ The graph view shows you what lint would find. Isolated nodes have no inbound li
 Useful queries:
 
 ```dataview
-TABLE date, status FROM "03-Resources/my-wiki/wiki"
+TABLE date, status FROM "my-wiki/wiki"
 WHERE type = "concept" AND status = "stale"
 SORT date ASC
 ```
 
 ```dataview
-LIST FROM "03-Resources/my-wiki/wiki"
+LIST FROM "my-wiki/wiki"
 WHERE type = "source-summary"
 SORT date DESC
 LIMIT 10
@@ -457,7 +457,7 @@ The source-summary template in `CLAUDE.md` includes this instruction as a remind
 
 ### Multiple wikis
 
-Each topic gets its own folder under `03-Resources/`. Run `init` once per topic:
+Each topic gets its own folder under `~/Documents/LLM-wiki/`. Run `init` once per topic:
 
 ```
 /llm-wiki:wiki init machine-learning

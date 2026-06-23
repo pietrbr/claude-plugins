@@ -15,7 +15,7 @@ Persistent, compounding knowledge base inside an Obsidian vault.
 
 ```
 /llm-wiki:wiki init my-topic
-/llm-wiki:wiki ingest ~/ObsidianVault/03-Resources/my-topic/raw/article.md
+/llm-wiki:wiki ingest ~/Documents/LLM-wiki/my-topic/raw/article.md
 /llm-wiki:wiki ingest https://example.com/article
 /llm-wiki:wiki query "What is X?"
 /llm-wiki:wiki lint
@@ -32,7 +32,7 @@ Walk up from `cwd` looking for a directory containing **both** `CLAUDE.md` and a
 3. If not found → move to parent directory and repeat until filesystem root.
 4. If no wiki found anywhere in the path, prompt the user:
    > "Which wiki should I use?"
-   List available wikis by running: `ls -d ~/ObsidianVault/03-Resources/*/wiki 2>/dev/null`
+   List available wikis by running: `ls -d ~/Documents/LLM-wiki/*/wiki 2>/dev/null`
    and presenting the parent directory names.
 
 ---
@@ -62,45 +62,50 @@ Create a new wiki scaffold under the Obsidian vault.
 ### Steps
 
 1. **Check if wiki already exists:**
-   If `~/ObsidianVault/03-Resources/<name>/` exists, abort with:
-   "Wiki '<name>' already exists at ~/ObsidianVault/03-Resources/<name>/. Use `wiki remove <name>` first, or choose a different name."
+   If `~/Documents/LLM-wiki/<name>/` exists, abort with:
+   "Wiki '<name>' already exists at ~/Documents/LLM-wiki/<name>/. Use `wiki remove <name>` first, or choose a different name."
 
 2. Create directory structure:
     ```bash
-    mkdir -p ~/ObsidianVault/03-Resources/<name>/raw/articles
-    mkdir -p ~/ObsidianVault/03-Resources/<name>/raw/attachments
-    mkdir -p ~/ObsidianVault/03-Resources/<name>/wiki/queries
-    mkdir -p ~/ObsidianVault/03-Resources/<name>/outputs/reports
+    mkdir -p ~/Documents/LLM-wiki/<name>/raw/articles
+    mkdir -p ~/Documents/LLM-wiki/<name>/raw/attachments
+    mkdir -p ~/Documents/LLM-wiki/<name>/wiki/queries
+    mkdir -p ~/Documents/LLM-wiki/<name>/outputs/reports
     ```
 
-3. Write `~/ObsidianVault/03-Resources/<name>/CLAUDE.md` using the **CLAUDE.md template** below (fill in `<name>`).
+3. Write `~/Documents/LLM-wiki/<name>/CLAUDE.md` using the **CLAUDE.md template** below (fill in `<name>`).
 
-4. Write `~/ObsidianVault/03-Resources/<name>/wiki/index.md` using the **index.md template** below.
+4. Write `~/Documents/LLM-wiki/<name>/wiki/index.md` using the **index.md template** below.
 
-5. Write `~/ObsidianVault/03-Resources/<name>/log.md` using the **log.md template** below.
+5. Write `~/Documents/LLM-wiki/<name>/log.md` using the **log.md template** below.
 
-6. Write `~/ObsidianVault/03-Resources/<name>/.gitignore` using the **.gitignore template** below.
+6. Write `~/Documents/LLM-wiki/<name>/.gitignore` using the **.gitignore template** below.
 
-7. Write `~/ObsidianVault/03-Resources/<name>/qmd.yml` using the **qmd.yml template** below.
+7. Write `~/Documents/LLM-wiki/<name>/qmd.yml` using the **qmd.yml template** below.
 
-8. Commit to vault git:
+8. **Ensure the vault is a git repo.** The vault root `~/Documents/LLM-wiki/` is created on first use and may not yet be a git repo. If `~/Documents/LLM-wiki/.git` does not exist, initialize it:
    ```bash
-   git -C ~/ObsidianVault add "03-Resources/<name>/" && git -C ~/ObsidianVault commit -m "init: <name> wiki"
+   git -C ~/Documents/LLM-wiki rev-parse --git-dir >/dev/null 2>&1 || git -C ~/Documents/LLM-wiki init
    ```
 
-9. If qmd available:
+9. Commit to vault git:
    ```bash
-   "${QMD}" collection add ~/ObsidianVault/03-Resources/<name>/wiki --name <name> && "${QMD}" embed --collection <name>
+   git -C ~/Documents/LLM-wiki add "<name>/" && git -C ~/Documents/LLM-wiki commit -m "init: <name> wiki"
    ```
 
-10. Print Web Clipper setup instruction:
+10. If qmd available:
+   ```bash
+   "${QMD}" collection add ~/Documents/LLM-wiki/<name>/wiki --name <name> && "${QMD}" embed --collection <name>
+   ```
+
+11. Print Web Clipper setup instruction:
      ```
      Obsidian Web Clipper setup:
      1. Install: https://obsidian.md/clipper
      2. In clipper settings, set Destination folder to:
-        03-Resources/<name>/raw/articles
+        <name>/raw/articles
      3. Set filename template to: {{date:YYYY-MM-DD}}-{{title}}
-     4. After clipping, run: /llm-wiki:wiki ingest ~/ObsidianVault/03-Resources/<name>/raw/articles/<clipped-file>.md
+     4. After clipping, run: /llm-wiki:wiki ingest ~/Documents/LLM-wiki/<name>/raw/articles/<clipped-file>.md
      ```
 
 ---
@@ -140,7 +145,7 @@ Acquire a source and save it to the raw library. Does NOT create wiki pages — 
 
 6. **Commit:**
    ```bash
-   git -C ~/ObsidianVault add "03-Resources/<wiki-name>/" && git -C ~/ObsidianVault commit -m "ingest: <title>"
+   git -C ~/Documents/LLM-wiki add "<wiki-name>/" && git -C ~/Documents/LLM-wiki commit -m "ingest: <title>"
    ```
 
 7. **Print:** "Source saved to raw/articles/<filename>. Run `wiki compile` to integrate into the wiki."
@@ -192,7 +197,7 @@ Read raw sources and create/update wiki pages with entity extraction and cross-r
 
 6. **Commit:**
    ```bash
-   git -C ~/ObsidianVault add "03-Resources/<wiki-name>/" && git -C ~/ObsidianVault commit -m "compile: <summary>"
+   git -C ~/Documents/LLM-wiki add "<wiki-name>/" && git -C ~/Documents/LLM-wiki commit -m "compile: <summary>"
    ```
 
 7. **If qmd available:**
@@ -242,7 +247,7 @@ Answer a question using wiki knowledge, with citations.
 
 8. **Commit:**
    ```bash
-   git -C ~/ObsidianVault add "03-Resources/<wiki-name>/" && git -C ~/ObsidianVault commit -m "query: <slug>"
+   git -C ~/Documents/LLM-wiki add "<wiki-name>/" && git -C ~/Documents/LLM-wiki commit -m "query: <slug>"
    ```
 
 ---
@@ -299,7 +304,7 @@ Audit wiki integrity and fix issues.
 
 8. **Commit:**
    ```bash
-    git -C ~/ObsidianVault commit -am "lint: YYYY-MM-DD"
+    git -C ~/Documents/LLM-wiki commit -am "lint: YYYY-MM-DD"
     ```
 
 ---
@@ -310,7 +315,7 @@ Delete a wiki and all its contents.
 
 ### Steps
 
-1. **Resolve wiki path:** `~/ObsidianVault/03-Resources/<name>/`
+1. **Resolve wiki path:** `~/Documents/LLM-wiki/<name>/`
 
 2. **Verify it exists.** If not, abort: "Wiki '<name>' does not exist."
 
@@ -323,7 +328,7 @@ Delete a wiki and all its contents.
 
 5. **Remove from git and filesystem:**
    ```bash
-   git -C ~/ObsidianVault rm -rf "03-Resources/<name>/" && git -C ~/ObsidianVault commit -m "remove: <name> wiki"
+   git -C ~/Documents/LLM-wiki rm -rf "<name>/" && git -C ~/Documents/LLM-wiki commit -m "remove: <name> wiki"
    ```
 
 6. **Confirm:** "Wiki '<name>' has been removed."
@@ -336,7 +341,7 @@ Handle these failure modes gracefully:
 
 | Situation | Action |
 |-----------|--------|
-| **No active wiki found** | List available wikis in `~/ObsidianVault/03-Resources/*/wiki`. Suggest `wiki init <name>` if none exist. |
+| **No active wiki found** | List available wikis in `~/Documents/LLM-wiki/*/wiki`. Suggest `wiki init <name>` if none exist. |
 | **qmd not available** | Fall back to `wiki/index.md` for search. Warn: "qmd unavailable — using index.md fallback." |
 | **Network error on URL ingest** | Retry once. If still failing, report the error and suggest saving content manually to `raw/articles/`. |
 | **Git commit fails** | Warn: "Git commit failed: <error>. Changes are saved but not committed." Continue with remaining steps. |

@@ -12,7 +12,7 @@ claude plugin install /path/to/llm-wiki
 
 - **Node.js 18+** — for automatic qmd and Marp installation
 - **Git** — for auto-committing wiki changes
-- **Obsidian vault** at `~/ObsidianVault/` with a `03-Resources/` directory
+- **Obsidian vault** at `~/Documents/LLM-wiki/` (created automatically on first `init`)
 
 Dependencies (`qmd`, `marp-cli`) are installed automatically on first session start.
 
@@ -24,12 +24,12 @@ Dependencies (`qmd`, `marp-cli`) are installed automatically on first session st
 /llm-wiki:wiki init my-topic
 ```
 
-Creates `~/ObsidianVault/03-Resources/my-topic/` with the full wiki structure: `raw/`, `wiki/`, `CLAUDE.md` schema, indexes, and git tracking.
+Creates `~/Documents/LLM-wiki/my-topic/` with the full wiki structure: `raw/`, `wiki/`, `CLAUDE.md` schema, indexes, and git tracking.
 
 ### Ingest a source
 
 ```
-/llm-wiki:wiki ingest ~/ObsidianVault/03-Resources/my-topic/raw/article.md
+/llm-wiki:wiki ingest ~/Documents/LLM-wiki/my-topic/raw/article.md
 /llm-wiki:wiki ingest https://example.com/interesting-article
 ```
 
@@ -39,7 +39,7 @@ Saves the source to `raw/articles/`. Does not create wiki pages — use `compile
 
 ```
 /llm-wiki:wiki compile
-/llm-wiki:wiki compile ~/ObsidianVault/03-Resources/my-topic/raw/articles/2026-04-05-article.md
+/llm-wiki:wiki compile ~/Documents/LLM-wiki/my-topic/raw/articles/2026-04-05-article.md
 ```
 
 Reads uncompiled raw sources, creates/updates wiki pages (source summary, concept pages, person pages), updates the index, and commits.
@@ -71,7 +71,7 @@ Deletes the wiki directory, removes the qmd collection, and commits the deletion
 ## Wiki Structure
 
 ```
-~/ObsidianVault/03-Resources/<wiki-name>/
+~/Documents/LLM-wiki/<wiki-name>/
 ├── raw/                  ← immutable source drops (never edited by LLM)
 │   ├── articles/         ← text source documents
 │   └── attachments/      ← images
@@ -103,7 +103,7 @@ qmd provides hybrid search (BM25 + vector) over the wiki. It's optional — the 
 claude plugin uninstall llm-wiki
 ```
 
-This removes the plugin and its dependency cache. Your wiki data in `~/ObsidianVault/` is preserved.
+This removes the plugin and its dependency cache. Your wiki data in `~/Documents/LLM-wiki/` is preserved.
 
 ## License
 
