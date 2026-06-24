@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+"""llm-wiki state CLI.
+
+Single source of truth for machine-local state and hook logic. Used by the
+plugin's hooks AND by the operation commands (the model shells out to it). The
+user never types it directly.
+
+Self-locates the plugin root from its own path (this file lives at
+<plugin_root>/bin/llm-wiki-state), so it needs NO environment variables -- it
+works identically whether invoked by a hook or by the agent's Bash tool.
+
+State (machine-local, outside any vault, so no gitignore needed):
+  ~/.config/llm-wiki/config.json   {"vault_path": "..."}
+  ~/.config/llm-wiki/topics.json   {"<abs-dir>": "<topic>", ...}
+
+Subcommands:
+  resolve                       (UserPromptSubmit hook; reads hook JSON on stdin)
+  dep-check                     (SessionStart hook; reads hook JSON on stdin)
+  context <cwd>                 print vault_path/topic/templates_path/etc. for a command
+  topic-set <cwd> <name>
+  topic-get <cwd>
+  topic-unset <cwd>
+  topic-list
+  config-get <key>
+  config-set <key> <value>
+"""
+import json
+import os
+import re
+import shutil
+import sys
+from pathlib import Path
+
+CONFIG_DIR = Path.home() / ".config" / "llm-wiki"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+TOPICS_FILE = CONFIG_DIR / "topics.json"
+
+# Commands that may run without a topic bound for the cwd (bootstrap).
+EXEMPT = {"init", "set-topic", "set-vault", "doctor"}
+PLUGIN_PREFIX = "llm-wiki:"
+
+
+def plugin_root() -> Path:
+    # <plugin_root>/bin/llm-wiki-state -> <plugin_root>
+    return Path(os.path.realpath(__file__)).parent.parent
+
+
+def references_dir() -> Path:
+    return plugin_root() / "references"
+
+
+def _load(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+
+
+def _save(path: Path, data: dict) -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+
+def vault_path() -> str:
+    return _load(CONFIG_FILE).get("vault_path", "")
+
+
+def topic_for(cwd: str) -> str:
+    # Exact-key lookup only. No walk-up, no prefix/subdir inheritance (plan C2).
+    return _load(TOPICS_FILE).get(os.path.abspath(cwd), "")
+
+
+def detect_command(prompt: str) -> str:
+    if not prompt:
+        return ""
+    m = re.search(r"/?" + re.escape(PLUGIN_PREFIX) + r"([A-Za-z][\w-]*)", prompt)
+    return m.group(1) if m else ""
+
+
+def read_hook_input() -> dict:
+    try:
+        return json.loads(sys.stdin.read() or "{}")
+    except Exception:
+        return {}
+
+
+def context_lines(cwd: str) -> str:
+    refs = references_dir()
+    return (
+        f"vault_path={vault_path()}\n"
+        f"topic={topic_for(cwd)}\n"
+        f"templates_path={refs / 'templates'}\n"
+        f"conventions_path={refs / 'conventions.md'}\n"
+    )
+
+
+# ---- subcommands ----------------------------------------------------------
+
+def cmd_resolve() -> int:
+    data = read_hook_input()
+    prompt = data.get("prompt", "")
+    cwd = data.get("cwd") or os.getcwd()
+    command = detect_command(prompt)
+    if not command:
+        return 0  # not a wiki command -> no-op, stay silent
+
+    topic = topic_for(cwd)
+    if command not in EXEMPT and not topic:
+        # Hard guard: stop the prompt until a topic is bound.
+        print(json.dumps({
+            "decision": "block",
+            "reason": (
+                f"No llm-wiki topic is set for this directory ({cwd}).\n"
+                f"Run /llm-wiki:set-topic <name> to bind it, "
+                f"or /llm-wiki:init <name> to create a new wiki here."
+            ),
+        }))
+        return 0
+
+    conventions = ""
+    conv_file = references_dir() / "conventions.md"
+    try:
+        conventions = conv_file.read_text()
+    except Exception:
+        pass
+
+    additional = (
+        "llm-wiki active context (resolved deterministically; trust these):\n"
+        + context_lines(cwd)
+        + ("\n--- conventions ---\n" + conventions if conventions else "")
+    )
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": additional,
+        }
+    }))
+    return 0
+
+
+def cmd_dep_check() -> int:
+    read_hook_input()  # drain stdin; content unused
+    if shutil.which("qmd"):
+        return 0  # present -> silent
+    msg = ("llm-wiki: qmd not found on PATH. Search falls back to index.md "
+           "(no vector search). Install with: npm i -g @tobilu/qmd")
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": msg,
+            "systemMessage": msg,
+        }
+    }))
+    return 0
+
+
+def cmd_context(cwd: str) -> int:
+    sys.stdout.write(context_lines(cwd))
+    return 0
+
+
+def cmd_topic_set(cwd: str, name: str) -> int:
+    data = _load(TOPICS_FILE)
+    data[os.path.abspath(cwd)] = name
+    _save(TOPICS_FILE, data)
+    print(f"Bound {os.path.abspath(cwd)} -> {name}")
+    return 0
+
+
+def cmd_topic_get(cwd: str) -> int:
+    print(topic_for(cwd))
+    return 0
+
+
+def cmd_topic_unset(cwd: str) -> int:
+    data = _load(TOPICS_FILE)
+    if data.pop(os.path.abspath(cwd), None) is not None:
+        _save(TOPICS_FILE, data)
+        print(f"Unbound {os.path.abspath(cwd)}")
+    return 0
+
+
+def cmd_topic_list() -> int:
+    for k, v in sorted(_load(TOPICS_FILE).items()):
+        print(f"{k}\t{v}")
+    return 0
+
+
+def cmd_config_get(key: str) -> int:
+    print(_load(CONFIG_FILE).get(key, ""))
+    return 0
+
+
+def cmd_config_set(key: str, value: str) -> int:
+    data = _load(CONFIG_FILE)
+    data[key] = value
+    _save(CONFIG_FILE, data)
+    print(f"{key}={value}")
+    return 0
+
+
+def main(argv) -> int:
+    if not argv:
+        sys.stderr.write(__doc__)
+        return 2
+    op, rest = argv[0], argv[1:]
+    try:
+        if op == "resolve":
+            return cmd_resolve()
+        if op == "dep-check":
+            return cmd_dep_check()
+        if op == "context":
+            return cmd_context(rest[0])
+        if op == "topic-set":
+            return cmd_topic_set(rest[0], rest[1])
+        if op == "topic-get":
+            return cmd_topic_get(rest[0])
+        if op == "topic-unset":
+            return cmd_topic_unset(rest[0])
+        if op == "topic-list":
+            return cmd_topic_list()
+        if op == "config-get":
+            return cmd_config_get(rest[0])
+        if op == "config-set":
+            return cmd_config_set(rest[0], rest[1])
+    except IndexError:
+        sys.stderr.write(f"llm-wiki-state: missing argument for '{op}'\n")
+        return 2
+    sys.stderr.write(f"llm-wiki-state: unknown subcommand '{op}'\n")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

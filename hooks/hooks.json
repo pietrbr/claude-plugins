@@ -5,8 +5,19 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/install-deps.sh\"",
-            "timeout": 120
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/llm-wiki-state\" dep-check",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/llm-wiki-state\" resolve",
+            "timeout": 10
           }
         ]
       }
