@@ -159,6 +159,28 @@ def cmd_context(cwd: str) -> int:
     return 0
 
 
+def cmd_config_check() -> int:
+    """Reachability + integrity of the config store (distinguishes missing
+    from corrupt; reports writability needed by set-vault/set-topic/init)."""
+    print(f"config_dir={CONFIG_DIR}")
+    if CONFIG_DIR.exists():
+        print(f"  dir=exists writable={'yes' if os.access(CONFIG_DIR, os.W_OK) else 'NO'}")
+    else:
+        print(f"  dir=missing (created on first write; "
+              f"parent writable={'yes' if os.access(CONFIG_DIR.parent, os.W_OK) else 'NO'})")
+    for label, path in (("config.json", CONFIG_FILE), ("topics.json", TOPICS_FILE)):
+        if not path.exists():
+            print(f"  {label}=absent")
+            continue
+        try:
+            data = json.loads(path.read_text())
+            n = len(data) if isinstance(data, dict) else 0
+            print(f"  {label}=ok ({n} keys)")
+        except Exception as e:
+            print(f"  {label}=INVALID ({e.__class__.__name__})")
+    return 0
+
+
 def cmd_topic_set(cwd: str, name: str) -> int:
     data = _load(TOPICS_FILE)
     data[os.path.abspath(cwd)] = name
@@ -211,6 +233,11 @@ def main(argv) -> int:
             return cmd_dep_check()
         if op == "context":
             return cmd_context(rest[0])
+        if op == "config-dir":
+            print(CONFIG_DIR)
+            return 0
+        if op == "config-check":
+            return cmd_config_check()
         if op == "topic-set":
             return cmd_topic_set(rest[0], rest[1])
         if op == "topic-get":
