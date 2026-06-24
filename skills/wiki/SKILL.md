@@ -1,7 +1,7 @@
 ---
 name: wiki
 description: >-
-  LLM Wiki -- a persistent, compounding knowledge base in Obsidian. Use when the
+  LLM Wiki -- a persistent, compounding knowledge base in a local markdown vault. Use when the
   user wants to add a source to their wiki, ask their wiki a question, build or
   maintain a knowledge base, or mentions llm-wiki / "my wiki". Routes to the
   llm-wiki commands.
