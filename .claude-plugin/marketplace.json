@@ -7,7 +7,7 @@
     {
       "name": "llm-wiki",
       "source": "./",
-      "description": "LLM Wiki — persistent, compounding knowledge base inside Obsidian. Based on Karpathy's LLM Wiki pattern."
+      "description": "LLM Wiki -- a persistent, compounding knowledge base in a local markdown vault, built and maintained from Claude Code via per-operation commands. Based on Karpathy's LLM Wiki pattern."
     }
   ]
 }
