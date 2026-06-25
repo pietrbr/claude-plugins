@@ -29,4 +29,5 @@ create wiki pages (that is `compile`). No prompts; this is the default behavior.
    ---
    ```
 7. Append an ingest entry to `W/log.md`. Commit. Never push.
-8. Print: "Saved to raw/articles/. Run /llm-wiki:compile to integrate."
+8. Stay silent on success (see the Output policy). Speak only for warnings,
+   conflicts, or errors.

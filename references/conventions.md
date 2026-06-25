@@ -4,17 +4,40 @@ These rules govern every operation. They are injected into context by the
 resolution hook and are the base layer; a vault-root `CLAUDE.md` then a topic
 `CLAUDE.md` may override them (last-wins). Keep them short.
 
+## Output policy (chat)
+
+- Stay SILENT on routine success. Do NOT narrate bookkeeping: no "saved",
+  "compiled", "filed", "committed", "done", or "all went well" confirmations.
+  A successful operation produces no chat output.
+- Speak ONLY for things the user needs to act on or know about:
+  - warnings and contradictions (`> [!WARNING]`);
+  - a previously-flagged warning that a new source re-triggers or re-widens;
+  - errors and blocks (e.g. no topic bound, missing source);
+  - **no-op notices**: a command the user invoked that found nothing to do
+    (e.g. `compile` when all sources are already compiled) -- surface it, since
+    the user expected work to happen;
+  - command deliverables and deliberate state changes: a `query` answer; a
+    `doctor`/`lint` report; the result of a config/setup command
+    (`set-vault`, `set-topic`, `init`) and `remove`'s recovery commit.
+- The silence applies to the recurring content operations -- `ingest`,
+  `compile`, `query` -- and their commit/bookkeeping noise, NOT to the
+  deliverables above.
+- This governs chat prose only; `log.md` entries and commits are written as usual.
+
 ## Faithfulness (the core principle)
+
 - The raw source is the only ground truth. Never bend a reading to fit existing
   wiki pages. Verification always re-grounds in the raw source, never in a summary.
 - Avoiding hallucination is paramount. State what you actually read; do not invent.
 
 ## Naming & links
+
 - Filenames: `lowercase-kebab-case.md`.
 - Internal links: `[[wikilink]]` only (filename without extension). Never use
   standard markdown links for internal references.
 
 ## Per-claim citation discipline
+
 - Every non-obvious claim links its basis:
   - `[[source-summary-x]]` = a source said this.
   - `[[concept-y]]` = derived from / connected to other wiki knowledge.
@@ -23,6 +46,7 @@ resolution hook and are the base layer; a vault-root `CLAUDE.md` then a topic
   link target.
 
 ## Summary framing (negative space by perspective)
+
 - Each source-summary declares a specific **frame** (the lens it read through) and
   a one-line lens-bound disclaimer.
 - Do NOT enumerate "other angles not covered" (that invites hallucination). The
@@ -30,6 +54,7 @@ resolution hook and are the base layer; a vault-root `CLAUDE.md` then a topic
   frame means a sharper implied boundary.
 
 ## Reader isolation (compile)
+
 - The source-reader is **wiki-blind**: it never sees existing wiki pages, only the
   raw source + a brief + the template.
 - Neutral reads are also **conversation-blind**. Focused reads are
@@ -37,25 +62,30 @@ resolution hook and are the base layer; a vault-root `CLAUDE.md` then a topic
   the source) but still wiki-blind.
 
 ## Cross-references
+
 - Every page links to >= 1 other page when content warrants it.
 - On compile, run a backlink audit: grep existing pages for mentions of new page
   titles and add `[[wikilinks]]` where missing (both directions).
 - Flag contradictions inline: `> [!WARNING] Contradiction with [[other-page]]`.
 
 ## Index format (`wiki/index.md`)
+
 - Read it FIRST when querying. Organized by domain. One line per page:
   `- [[page-name]] -- one-line description (YYYY-MM-DD)` (keep <= 80 chars).
 - Update after every compile.
 
 ## Log format (`log.md`)
+
 - Append-only; never edit existing entries. Grep-able prefix:
   `## [YYYY-MM-DD] <op> | <title>` then a one-line description.
 
 ## Git
+
 - Commit to the vault repo after every operation. Manage history autonomously.
 - NEVER push.
 
 ## Templates
+
 - Page templates ship with the plugin at the injected `templates_path`. Read the
   one you need at runtime; do not copy them into the wiki. `index.md`/`log.md` are
   one-time scaffolds instantiated at init.
