@@ -1,12 +1,12 @@
 {
-  "name": "llm-wiki",
+  "name": "pietro-marketplace",
   "owner": {
     "name": "pietrbr"
   },
   "plugins": [
     {
       "name": "llm-wiki",
-      "source": "./",
+      "source": "./plugins/llm-wiki",
       "description": "LLM Wiki -- a persistent, compounding knowledge base in a local markdown vault, built and maintained from Claude Code via per-operation commands. Based on Karpathy's LLM Wiki pattern."
     }
   ]
