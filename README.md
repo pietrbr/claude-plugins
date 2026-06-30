@@ -22,4 +22,8 @@ Then install any plugin from it:
 
 ## License
 
-MIT
+The root [`LICENSE`](./LICENSE) (MIT) covers only the marketplace scaffolding
+(this README and the `.claude-plugin/marketplace.json` manifest). Each plugin
+under `plugins/` is licensed independently by its own `LICENSE` file, which
+governs everything in that plugin's directory. Where a plugin carries its own
+license, that license — not the root one — applies to the plugin.
