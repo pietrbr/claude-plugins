@@ -11,8 +11,9 @@ status: filed             # filed | promoted
 <Synthesized answer in prose, with [[wikilink]] citations inline.>
 
 <!--
-A query is one question -> one filed, cited answer. When an answer becomes durable
-it is rewritten as a (derived) concept and this query is marked status: promoted.
+A query is one question -> one filed, cited answer. When an answer is a reusable
+synthesis not already covered by a concept page, it is rewritten as a (derived)
+concept and this query is marked status: promoted.
 Long multi-document explorations are NOT queries; they produce derived concept
 pages (one complete inference each).
 -->
