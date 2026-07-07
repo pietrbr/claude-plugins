@@ -1,0 +1,8 @@
+{
+  "name": "python-dev",
+  "version": "0.1.0",
+  "description": "Python development workflow: subagents that run tests + lint, write tests, and do root-cause debugging, plus a run-tests skill that drives the runner.",
+  "author": {
+    "name": "pietrbr"
+  }
+}

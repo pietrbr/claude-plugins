@@ -8,6 +8,21 @@
       "name": "llm-wiki",
       "source": "./plugins/llm-wiki",
       "description": "LLM Wiki -- a persistent, compounding knowledge base in a local markdown vault, built and maintained from Claude Code via per-operation commands. Based on Karpathy's LLM Wiki pattern."
+    },
+    {
+      "name": "python-dev",
+      "source": "./plugins/python-dev",
+      "description": "Python development workflow: subagents that run tests + lint, write tests, and do root-cause debugging, plus a run-tests skill that drives the runner."
+    },
+    {
+      "name": "guided-learning",
+      "source": "./plugins/guided-learning",
+      "description": "A hands-on teaching posture for learning any procedural system by operating it yourself, with Claude as lab instructor."
+    },
+    {
+      "name": "format",
+      "source": "./plugins/format",
+      "description": "Format files with a conform.nvim/mason-style toolchain (isort/ruff/prettier/shfmt/stylua/taplo/latexindent/...). Defaults to git-changed files; respects repo-local formatter config."
     }
   ]
 }

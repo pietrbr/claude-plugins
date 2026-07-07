@@ -1,0 +1,8 @@
+{
+  "name": "format",
+  "version": "0.1.0",
+  "description": "Format files with a conform.nvim/mason-style toolchain (isort/ruff/prettier/shfmt/stylua/taplo/latexindent/...). Defaults to git-changed files; respects repo-local formatter config.",
+  "author": {
+    "name": "pietrbr"
+  }
+}
