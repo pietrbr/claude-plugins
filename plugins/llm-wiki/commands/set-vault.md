@@ -2,6 +2,7 @@
 description: Set the llm-wiki vault directory (where all topics live)
 argument-hint: <path>
 ---
+
 Set the vault path for this machine. Argument: `$ARGUMENTS` (a directory path).
 
 1. Expand the path (resolve `~`). If no argument was given, ask the user for the vault path.

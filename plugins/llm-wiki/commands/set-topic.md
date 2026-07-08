@@ -2,6 +2,7 @@
 description: Bind the current directory to an existing wiki topic
 argument-hint: <topic>
 ---
+
 Bind the current working directory to a wiki topic, so future commands run here
 resolve to it (remembered across sessions).
 

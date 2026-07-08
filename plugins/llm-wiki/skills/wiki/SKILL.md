@@ -20,17 +20,17 @@ Do NOT perform operations from here -- invoke the matching command.
 
 ## Routing
 
-| Intent | Command |
-|--------|---------|
-| Set where wikis live (once per machine) | `/llm-wiki:set-vault <path>` |
-| Create a new topic | `/llm-wiki:init <topic>` |
-| Bind the current directory to a topic | `/llm-wiki:set-topic <topic>` |
-| Save a source (verbatim, no pages yet) | `/llm-wiki:ingest <path\|url>` |
-| Turn raw sources into wiki pages | `/llm-wiki:compile [<path>]` |
-| Ask the wiki a question | `/llm-wiki:query <question>` |
-| Health-check the wiki | `/llm-wiki:lint` |
-| Delete a topic (git-recoverable) | `/llm-wiki:remove <topic>` |
-| Check environment/config | `/llm-wiki:doctor` |
+| Intent                                  | Command                        |
+| --------------------------------------- | ------------------------------ |
+| Set where wikis live (once per machine) | `/llm-wiki:set-vault <path>`   |
+| Create a new topic                      | `/llm-wiki:init <topic>`       |
+| Bind the current directory to a topic   | `/llm-wiki:set-topic <topic>`  |
+| Save a source (verbatim, no pages yet)  | `/llm-wiki:ingest <path\|url>` |
+| Turn raw sources into wiki pages        | `/llm-wiki:compile [<path>]`   |
+| Ask the wiki a question                 | `/llm-wiki:query <question>`   |
+| Health-check the wiki                   | `/llm-wiki:lint`               |
+| Delete a topic (git-recoverable)        | `/llm-wiki:remove <topic>`     |
+| Check environment/config                | `/llm-wiki:doctor`             |
 
 ## Core concepts (for routing, not execution)
 

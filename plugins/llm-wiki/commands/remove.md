@@ -2,6 +2,7 @@
 description: Delete a wiki topic (git-recoverable; no confirmation)
 argument-hint: <topic>
 ---
+
 Delete a wiki topic. Deletions are git-recoverable, so do NOT ask for confirmation.
 
 1. Resolve context for `vault_path` (`llm-wiki-state context "$PWD"`). Topic = `$ARGUMENTS` (required). Let `W = <vault_path>/<topic>`.

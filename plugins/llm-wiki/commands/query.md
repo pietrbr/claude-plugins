@@ -2,6 +2,7 @@
 description: Answer a question from the wiki, with citations, and file it
 argument-hint: <question>
 ---
+
 Answer a question against the active wiki and file the answer back.
 
 1. Resolve context: `llm-wiki-state context "$PWD"`. Need a `topic`; if empty, stop and tell the user to run `/llm-wiki:set-topic`. Let `W = <vault_path>/<topic>`.

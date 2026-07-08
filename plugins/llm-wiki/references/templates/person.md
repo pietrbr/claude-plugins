@@ -6,12 +6,16 @@ status: active
 informed-by:
   - "[[source-summary-x]]"
 ---
+
 # <Person Name>
+
 Role / affiliation.
 
 ## Key Contributions
+
 <What they contributed, accreting across sources. Each claim links its source:
- [[source-summary-x]].>
+[[source-summary-x]].>
 
 ## See Also
+
 - [[related-concept]]

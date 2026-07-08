@@ -2,6 +2,7 @@
 description: Health-check the wiki; auto-fix mechanical issues, flag judgment ones
 argument-hint: (no arguments)
 ---
+
 Audit the active wiki. Follow the injected conventions. Bookkeeping is automatic;
 judgment stays with the user.
 

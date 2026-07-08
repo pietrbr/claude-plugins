@@ -2,6 +2,7 @@
 description: Compile raw sources into wiki pages (faithful read, then merge)
 argument-hint: [<path>]
 ---
+
 Turn uncompiled raw sources into wiki pages. Two passes: a WIKI-BLIND faithful
 read, then an informed merge. Follow the injected conventions exactly.
 
@@ -20,7 +21,7 @@ read, then an informed merge. Follow the injected conventions exactly.
 5. PASS 2 - integrate (you, wiki-aware):
    a. Write/append the source-summary in `W/wiki/`: `## Overview -- frame: ...` for neutral; `## Deep read [YYYY-MM-DD] -- frame: ...` for focused. Fix small factual errors in place with a `[corrected YYYY-MM-DD per deep read: <frame>]` note; only a genuinely new perspective gets a new section.
    b. For each candidate entity, reconcile aliases against existing pages, then create/update `W/wiki/<name>.md` from `concept.md`/`person.md`. Apply the per-claim citation discipline (link `[[source-summary-x]]` for source claims, `[[concept-y]]` for derived).
-   c. Backlink audit: ``grep -rln "<new title>" "W/wiki/"`` and add missing `[[wikilinks]]`.
+   c. Backlink audit: `grep -rln "<new title>" "W/wiki/"` and add missing `[[wikilinks]]`.
    d. Update `W/wiki/index.md`.
    e. Set `compiled: true` in each source's `.meta.md`.
 6. Append a compile entry to `W/log.md`. Commit. Never push.

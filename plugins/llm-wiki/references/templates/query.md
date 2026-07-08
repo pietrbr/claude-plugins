@@ -5,9 +5,11 @@ tags: [domain]
 question: "<the original question>"
 informed-by:
   - "[[page-1]]"
-status: filed             # filed | promoted
+status: filed # filed | promoted
 ---
+
 # <Question as title>
+
 <Synthesized answer in prose, with [[wikilink]] citations inline.>
 
 <!--

@@ -2,6 +2,7 @@
 description: Create a new wiki topic and bind the current directory to it
 argument-hint: <topic>
 ---
+
 Create a new wiki under the vault and bind the current directory to it.
 
 1. Resolve context: run `llm-wiki-state context "$PWD"`. Note `templates_path`. If `vault_path` is empty, ask the user for a vault path and set it (`llm-wiki-state config-set vault_path "<path>"`).

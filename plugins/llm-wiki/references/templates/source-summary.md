@@ -5,16 +5,19 @@ tags: [domain]
 source-file: YYYY-MM-DD-<slug>.<ext>
 source-url: <original URL or file path>
 ---
+
 # <Source Title>
 
 ## Overview -- frame: <neutral, specific angle>
+
 <Faithful within-frame digest: the source's main claims, methods, findings.
- Every non-obvious claim links its basis. Read wiki-blind.>
+Every non-obvious claim links its basis. Read wiki-blind.>
 
 > Read through the frame above only. Faithful within that lens; not a complete
 > account. For other angles, recompile the source.
 
 ## Entities
+
 - [[concept-or-person]]
 
 <!--

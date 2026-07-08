@@ -2,6 +2,7 @@
 description: Report llm-wiki environment and configuration
 argument-hint: (no arguments)
 ---
+
 Report the environment. Read-only; change nothing. Print a concise checklist using
 `OK` / `MISSING` (ASCII only) with fix hints.
 
