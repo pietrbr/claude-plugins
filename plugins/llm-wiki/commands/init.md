@@ -8,7 +8,7 @@ Create a new wiki under the vault and bind the current directory to it.
 1. Resolve context: run `llm-wiki-state context "$PWD"`. Note `templates_path`. If `vault_path` is empty, ask the user for a vault path and set it (`llm-wiki-state config-set vault_path "<path>"`).
 2. Topic = `$ARGUMENTS` (ask if missing). Let `W = <vault_path>/<topic>`. If `W` already exists, abort and point to `/llm-wiki:remove`.
 3. Scaffold:
-   - `mkdir -p W/raw/articles W/raw/attachments W/wiki/queries W/outputs/reports`
+   - `mkdir -p W/raw/documents W/raw/attachments W/wiki/queries W/outputs/reports`
    - `W/wiki/index.md` from `<templates_path>/index.md` (substitute the topic name).
    - `W/log.md` from `<templates_path>/log.md` (substitute the topic name).
    - `W/qmd.yml`:

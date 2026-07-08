@@ -15,16 +15,16 @@ create wiki pages (that is `compile`). No prompts; this is the default behavior.
    - Types (provenance only; see conventions): `paper` (peer-reviewed/scholarly), `article` (informal external writing, incl. product docs/datasheets/manuals), `standard` (normative standards-body doc: 3GPP TS/TR, RFC, IEEE, ETSI, O-RAN), `conversation` (transcript of talk/interview/meeting/chat), `user-note` (the user's own authored note). paper vs article: "scholarly-reviewed?" -- preprint=`paper`, blog/whitepaper/product docs=`article`.
    - Type: if `--type <t>` was given, use it. Else peek only the start of the file -- `head -40` for text, or the first page for a PDF -- and pick the best-fitting type from that peek. Do not read further; never ask the user when ambiguous -- take the best guess.
    - Title: first `#` heading or YAML `title:` in the peek (first page for a PDF); else from the filename.
-5. Save verbatim to `W/raw/articles/YYYY-MM-DD-<slug>.<ext>`:
-   - File: `cp "<path>" "W/raw/articles/YYYY-MM-DD-<slug>.<ext>"`. NEVER read-and-rewrite (it corrupts PDFs/binaries). If the file already lives under `W/raw/`, skip the copy.
-   - URL: WebFetch the content; save as `W/raw/articles/YYYY-MM-DD-<slug>.md`.
+5. Save verbatim to `W/raw/documents/YYYY-MM-DD-<slug>.<ext>`:
+   - File: `cp "<path>" "W/raw/documents/YYYY-MM-DD-<slug>.<ext>"`. NEVER read-and-rewrite (it corrupts PDFs/binaries). If the file already lives under `W/raw/`, skip the copy.
+   - URL: WebFetch the content; save as `W/raw/documents/YYYY-MM-DD-<slug>.md`.
    - Disambiguate slug collisions (same date+slug) with a numeric suffix.
-6. Write a sidecar `W/raw/articles/YYYY-MM-DD-<slug>.meta.md`:
+6. Write a sidecar `W/raw/documents/YYYY-MM-DD-<slug>.meta.md`:
    ```yaml
    ---
    date: YYYY-MM-DD
    source-type: <paper|article|standard|conversation|user-note>
-   source-url: <original URL or path>
+   source-uri: <canonical external URL/DOI, or the original path it was ingested from; leave empty if neither -- NEVER a vault-internal raw/ path (that is source-file's job)>
    source-file: YYYY-MM-DD-<slug>.<ext>
    title: <extracted or inferred title>
    compiled: false

@@ -37,6 +37,15 @@ resolution hook and are the base layer; a vault-root `CLAUDE.md` then a topic
 - Internal links: `[[wikilink]]` only (filename without extension). Never use
   standard markdown links for internal references.
 
+## Source location vs provenance
+
+- `source-file` (bare filename, no path) is the ONLY pointer to the local raw
+  copy; resolve it against the `raw/` convention. Folder-agnostic on purpose.
+- `source-uri` is provenance ONLY: a canonical external identifier (URL / DOI),
+  or the original location the source was ingested from (a local path is valid
+  provenance). Leave it EMPTY when neither exists. NEVER a vault-internal
+  `raw/...` path -- that only duplicates `source-file` and breaks on moves.
+
 ## Per-claim citation discipline
 
 - Every non-obvious claim links its basis:

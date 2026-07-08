@@ -4,7 +4,7 @@ type: source-summary
 source-type: <paper|article|standard|conversation|user-note>
 tags: [domain]
 source-file: YYYY-MM-DD-<slug>.<ext>
-source-url: <original URL or file path>
+source-uri: <canonical external URL/DOI, or the original ingest path; empty if neither -- never a vault-internal raw/ path>
 ---
 
 # <Source Title>

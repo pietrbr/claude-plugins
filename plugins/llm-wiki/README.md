@@ -82,7 +82,7 @@ subdirectory inheritance), so you cannot accidentally write to the wrong wiki.
 ```
 <vault>/<topic>/
   raw/                immutable, verbatim sources (the LLM never edits these)
-    articles/         copied source files + <name>.meta.md sidecars
+    documents/        copied source files + <name>.meta.md sidecars
     attachments/
   wiki/               LLM-owned pages
     index.md          catalog, read first
@@ -139,7 +139,7 @@ never invoke it directly.
 - **Graph view** renders `[[wikilinks]]` as a visual network; orphans show as isolated
   nodes (what `lint` flags).
 - **Dataview** queries page frontmatter (`type`, `tags`, `informed-by`, ...).
-- **Web Clipper** can save articles straight into `<topic>/raw/articles/`; then run
+- **Web Clipper** can save articles straight into `<topic>/raw/documents/`; then run
   `/llm-wiki:ingest`.
 
 ## Known issues
