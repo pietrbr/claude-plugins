@@ -23,6 +23,11 @@
       "name": "format",
       "source": "./plugins/format",
       "description": "Format files with a conform.nvim/mason-style toolchain (isort/ruff/prettier/shfmt/stylua/taplo/latexindent/...). Defaults to git-changed files; respects repo-local formatter config."
+    },
+    {
+      "name": "conventional-commit-message",
+      "source": "./plugins/conventional-commit-message",
+      "description": "Draft a Conventional Commits message from the conversation's changed files and current git state; infers type/scope from repo history and never commits or pushes."
     }
   ]
 }

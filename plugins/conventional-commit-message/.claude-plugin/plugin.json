@@ -1,0 +1,8 @@
+{
+  "name": "conventional-commit-message",
+  "version": "0.1.0",
+  "description": "Draft a Conventional Commits message from the files changed in the conversation and the current git state -- infers type/scope from repo history, proposes the message, and never commits or pushes.",
+  "author": {
+    "name": "pietrbr"
+  }
+}
