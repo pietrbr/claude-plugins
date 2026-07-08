@@ -20,17 +20,17 @@ Do NOT perform operations from here -- invoke the matching command.
 
 ## Routing
 
-| Intent                                  | Command                        |
-| --------------------------------------- | ------------------------------ |
-| Set where wikis live (once per machine) | `/llm-wiki:set-vault <path>`   |
-| Create a new topic                      | `/llm-wiki:init <topic>`       |
-| Bind the current directory to a topic   | `/llm-wiki:set-topic <topic>`  |
-| Save a source (verbatim, no pages yet)  | `/llm-wiki:ingest <path\|url>` |
-| Turn raw sources into wiki pages        | `/llm-wiki:compile [<path>]`   |
-| Ask the wiki a question                 | `/llm-wiki:query <question>`   |
-| Health-check the wiki                   | `/llm-wiki:lint`               |
-| Delete a topic (git-recoverable)        | `/llm-wiki:remove <topic>`     |
-| Check environment/config                | `/llm-wiki:doctor`             |
+| Intent                                  | Command                                     |
+| --------------------------------------- | ------------------------------------------- |
+| Set where wikis live (once per machine) | `/llm-wiki:set-vault <path>`                |
+| Create a new topic                      | `/llm-wiki:init <topic>`                    |
+| Bind the current directory to a topic   | `/llm-wiki:set-topic <topic>`               |
+| Save a source (verbatim, no pages yet)  | `/llm-wiki:ingest <path\|url> [--type <t>]` |
+| Turn raw sources into wiki pages        | `/llm-wiki:compile [<path>]`                |
+| Ask the wiki a question                 | `/llm-wiki:query <question>`                |
+| Health-check the wiki                   | `/llm-wiki:lint`                            |
+| Delete a topic (git-recoverable)        | `/llm-wiki:remove <topic>`                  |
+| Check environment/config                | `/llm-wiki:doctor`                          |
 
 ## Core concepts (for routing, not execution)
 
@@ -41,6 +41,11 @@ Do NOT perform operations from here -- invoke the matching command.
 - **Page types**: `source-summary` (one per source, framed faithful read),
   `concept` (idea/entity; `person` is a kind; derived syntheses live here too),
   `query` (filed Q&A). Every non-obvious claim cites its basis via `[[wikilink]]`.
+- **Source types**: each source carries a provenance `source-type` (`paper`,
+  `article`, `standard`, `conversation`, `user-note`), set via `ingest --type` or
+  auto-classified. A conversation synthesis is captured by drafting a note, reviewing
+  it, then `ingest --type user-note` + `compile` -- it flows through the normal
+  faithful-read pipeline like any source (no verbatim promotion).
 
 Reference: see `KARPATHY-LLM-WIKI.md` at the plugin repo root for the original
 pattern. `qmd` (optional) provides search; without it, search falls back to

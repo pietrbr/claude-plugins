@@ -45,6 +45,20 @@ resolution hook and are the base layer; a vault-root `CLAUDE.md` then a topic
   There is NO ingested-vs-derived frontmatter flag; the distinction lives in the
   link target.
 
+## Source types (provenance only)
+
+- Recorded in each source's `.meta.md` `source-type`, and surfaced as metadata on the
+  source-summary page and its index line. A provenance/trust label only -- it changes
+  no compile/query behavior; boundaries are soft, misclassification is low-stakes.
+  - `paper` -- peer-reviewed / scholarly (journal, conference, arXiv preprint).
+  - `article` -- informal external writing (blog, news, magazine, product docs, datasheet, manual).
+  - `standard` -- normative standards-body document (3GPP TS/TR, RFC, IEEE, ETSI, O-RAN).
+  - `conversation` -- transcript of spoken/dialogic content (talk, interview, podcast, meeting, chat).
+  - `user-note` -- the user's own authored note or synthesis; vouched at time of writing, still subject to staleness like any source.
+- paper vs article: "was it scholarly-reviewed?" preprint -> `paper`; blog / whitepaper
+  / product docs -> `article`. standard vs article: a standard is standards-body-produced
+  and normative; product docs are single-vendor descriptive -> `article`.
+
 ## Summary framing (negative space by perspective)
 
 - Each source-summary declares a specific **frame** (the lens it read through) and

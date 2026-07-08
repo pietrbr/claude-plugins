@@ -1,6 +1,6 @@
 {
   "name": "llm-wiki",
-  "version": "4.1.0",
+  "version": "4.2.0",
   "description": "LLM Wiki -- a persistent, compounding knowledge base in a local markdown vault (Karpathy's LLM Wiki pattern). Per-operation commands to init, ingest, compile, query, lint, and remove topic wikis; optional qmd search.",
   "author": {
     "name": "pietrbr"

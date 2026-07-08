@@ -1,6 +1,7 @@
 ---
 date: YYYY-MM-DD
 type: source-summary
+source-type: <paper|article|standard|conversation|user-note>
 tags: [domain]
 source-file: YYYY-MM-DD-<slug>.<ext>
 source-url: <original URL or file path>

@@ -13,6 +13,7 @@ read, then an informed merge. Follow the injected conventions exactly.
    - If none: "All sources are already compiled." Stop.
 3. Decide the mode (never ask the user):
    - A "focus" = the user's comment/discussion about what matters for this source.
+   - Focus scope (nudge, not gate): a focus targets a subset -- an explicit path list or a query-selected set. Applying a focus across the whole default (uncompiled) set is fine when the corpus is new, recent, or freshly added. Only when the set is large AND established, raise a one-line nudge offering to query-select the pertinent sources first, then proceed as the user chooses.
    - fresh + no focus -> neutral read only.
    - fresh + focus -> neutral read + focused read(s).
    - already-compiled + focus -> append focused deep-read only (do NOT regenerate the Overview).
