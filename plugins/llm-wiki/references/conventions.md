@@ -21,7 +21,8 @@ resolution hook and are the base layer; a vault-root `CLAUDE.md` then a topic
     (`set-vault`, `set-topic`, `init`) and `remove`'s recovery commit.
 - The silence applies to the recurring content operations -- `ingest`,
   `compile`, `query` -- and their commit/bookkeeping noise, NOT to the
-  deliverables above.
+  deliverables above. (Exception: a single-source `compile` opens a brief
+  pre-read scoping discussion -- that interaction is intended, not bookkeeping.)
 - This governs chat prose only; `log.md` entries and commits are written as usual.
 
 ## Faithfulness (the core principle)
