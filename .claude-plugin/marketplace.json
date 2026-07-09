@@ -28,6 +28,11 @@
       "name": "conventional-commit-message",
       "source": "./plugins/conventional-commit-message",
       "description": "Draft a Conventional Commits message from the conversation's changed files and current git state; infers type/scope from repo history and never commits or pushes."
+    },
+    {
+      "name": "coordination-ledger",
+      "source": "./plugins/coordination-ledger",
+      "description": "Cross-repo coordination ledger -- a local, never-pushed issue tracker for repos under a common parent (e.g. paper + codebase). A Python program owns a JSON index; per-operation commands (init, register, open, reply, check) are thin wrappers (no hooks); parties registered incrementally at any relative path (incl. submodules); zero footprint in the party repos."
     }
   ]
 }

@@ -1,0 +1,489 @@
+#!/usr/bin/env python3
+"""coordination-ledger: manage a cross-repo coordination ledger.
+
+Owns all structured state (`index.json`) and the structured parts of issue body
+files (`issues/NNNN-slug.md`). The plugin's commands are thin wrappers: they
+gather user-approved content and shell out here; the model never hand-edits
+`index.json`. Self-locates the plugin root from its own path (no env needed).
+
+State lives in the coordination root -- the nearest ancestor of the cwd holding
+`index.json` + `issues/`. Party paths are stored RELATIVE to the root (portable);
+absolute paths are computed at runtime. The ledger is a local git repo: every
+mutation is committed, never pushed.
+
+Subcommands:
+  context   [--cwd D]                                        resolve root/party/etc (JSON)
+  init      [--cwd D]                                        scaffold a new ledger here
+  register  --path REL [--label L] [--cwd D]                 add a party
+  open      --author L [--actor L] --description D [--cwd D]  (body prose on stdin)
+  reply     --number N --status done|divergent [--description D] [--cwd D]  (stdin)
+  list      [--party L] [--status S] [--cwd D]               filter issues (table)
+  check     [--party L] [--cwd D]                            issues awaiting a party
+"""
+
+import argparse
+import datetime
+import json
+import os
+import re
+import subprocess
+import sys
+from contextlib import contextmanager
+from pathlib import Path
+from typing import NoReturn
+
+try:
+    import fcntl
+except ImportError:  # non-POSIX: no advisory lock (atomic writes still protect readers)
+    fcntl = None
+
+INDEX = "index.json"
+STATUSES = ("open", "done", "divergent")
+RESOLVED_STATUSES = ("done", "divergent")
+
+PLUGIN_ROOT = Path(os.path.realpath(__file__)).parent.parent
+TEMPLATES = PLUGIN_ROOT / "references" / "templates"
+CONVENTIONS = PLUGIN_ROOT / "references" / "conventions.md"
+
+
+def today() -> str:
+    return datetime.date.today().isoformat()
+
+
+def die(msg: str) -> NoReturn:
+    sys.stderr.write(f"coordination-ledger: {msg}\n")
+    raise SystemExit(1)
+
+
+def warn(msg: str) -> None:
+    sys.stderr.write(f"coordination-ledger: warning: {msg}\n")
+
+
+def slugify(text: str, limit: int = 40) -> str:
+    words = re.sub(r"[^a-z0-9]+", " ", text.lower()).split()
+    out = ""
+    for w in words:
+        cand = f"{out}-{w}" if out else w
+        if out and len(cand) > limit:
+            break
+        out = cand
+    # Hard-cap even a single oversized first word so the filename can't blow past NAME_MAX.
+    return out[:limit].strip("-") or "issue"
+
+
+# ---- root / party resolution ----------------------------------------------
+
+
+def find_root(cwd: str) -> "Path | None":
+    p = Path(os.path.abspath(cwd))
+    for d in (p, *p.parents):
+        if (d / INDEX).is_file() and (d / "issues").is_dir():
+            return d
+    return None
+
+
+def require_root(cwd: str) -> Path:
+    return find_root(cwd) or die(
+        "no coordination ledger found at or above here; run /coordination-ledger:init first."
+    )
+
+
+def load(root: Path) -> dict:
+    try:
+        data = json.loads((root / INDEX).read_text())
+    except Exception as e:
+        die(f"cannot read {root / INDEX}: {e}")
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("parties"), list)
+        or not isinstance(data.get("issues"), list)
+    ):
+        die(f"{root / INDEX} is malformed (expected an object with parties[] and issues[]).")
+    return data
+
+
+def save(root: Path, data: dict) -> None:
+    # Atomic: write a temp file then rename over index.json, so a concurrent
+    # reader (context/list/check) never sees a half-written file.
+    tmp = root / f".index.json.{os.getpid()}.tmp"
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    os.replace(tmp, root / INDEX)
+
+
+@contextmanager
+def locked(root: Path):
+    """Exclusive advisory lock around a read-modify-write, so parallel sessions
+    can't lose an update or collide on an issue number. POSIX flock; a no-op where
+    fcntl is unavailable (the atomic save still prevents torn reads)."""
+    if fcntl is None:
+        yield
+        return
+    fd = os.open(str(root / ".coordination-ledger.lock"), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def next_number(data: dict) -> int:
+    # Derived, not stored: numbers are monotonic and never recycled, so the next
+    # free number is always max(existing) + 1. Single source of truth = the issue list.
+    return max([0, *(i["number"] for i in data["issues"])]) + 1
+
+
+def party_for(root: Path, cwd: str, data: dict) -> "dict | None":
+    """Deepest registered party whose path contains cwd (None if at root/unregistered)."""
+    cwd_r = Path(os.path.abspath(cwd)).resolve()
+    matches = []
+    for pty in data["parties"]:
+        base = (root / pty["path"]).resolve()
+        if cwd_r == base or base in cwd_r.parents:
+            matches.append((len(base.parts), pty))
+    return max(matches, default=(0, None))[1]
+
+
+def party_by_label(data: dict, label: str) -> "dict | None":
+    return next((p for p in data["parties"] if p["label"] == label), None)
+
+
+def party_abspath(root: Path, party: dict) -> Path:
+    return (root / party["path"]).resolve()
+
+
+def issue_by_number(data: dict, number: int) -> "dict | None":
+    return next((i for i in data["issues"] if i["number"] == number), None)
+
+
+def issue_tag(number: int, slug: str) -> str:
+    return f"{number:04d}-{slug}"
+
+
+def body_filename(number: int, slug: str) -> str:
+    return f"{issue_tag(number, slug)}.md"
+
+
+def format_entry(label: str, sha: str, body: str) -> str:
+    # The one place the structured entry (heading / date / ref / body) is written.
+    return f"### {label}\n- date: {today()}\n- ref: {label}@{sha}\n\n{body}\n"
+
+
+# ---- git helpers (local only; never push) ---------------------------------
+
+
+def git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True,
+        text=True,
+        check=check,
+    )
+
+
+def git_toplevel(path: Path) -> "Path | None":
+    r = git(path, "rev-parse", "--show-toplevel", check=False)
+    return Path(r.stdout.strip()).resolve() if r.returncode == 0 and r.stdout.strip() else None
+
+
+def git_head(repo: Path) -> str:
+    r = git(repo, "rev-parse", "--short", "HEAD", check=False)
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else "none"
+
+
+def commit(root: Path, message: str, *paths: str) -> bool:
+    # Stage and commit ONLY these paths (pathspec on commit). Returns False (with a
+    # loud warning) if the commit fails, so the caller never reports false success.
+    git(root, "add", "--", *paths, check=False)
+    r = git(root, "commit", "-q", "-m", message, "--", *paths, check=False)
+    if r.returncode != 0:
+        warn(
+            "git commit FAILED -- the change is written to disk but NOT committed. "
+            "Fix git (e.g. set user.name/user.email) and commit it manually. "
+            f"git said: {r.stderr.strip() or r.stdout.strip()}"
+        )
+        return False
+    return True
+
+
+# ---- subcommands ----------------------------------------------------------
+
+
+def cmd_context(args) -> int:
+    root = find_root(args.cwd)
+    out = {
+        "root": str(root) if root else "",
+        "party_label": "",
+        "party_path": "",
+        "party_abspath": "",
+        "next_number": None,
+        "parties": [],
+        "templates_path": str(TEMPLATES),
+        "conventions_path": str(CONVENTIONS),
+    }
+    if root:
+        data = load(root)
+        out["next_number"] = next_number(data)
+        out["parties"] = data["parties"]
+        pty = party_for(root, args.cwd, data)
+        if pty:
+            out["party_label"] = pty["label"]
+            out["party_path"] = pty["path"]
+            out["party_abspath"] = str(party_abspath(root, pty))
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+def cmd_init(args) -> int:
+    root = Path(os.path.abspath(args.cwd)).resolve()
+    existing = find_root(str(root))
+    if existing:
+        die(f"a coordination ledger already exists at {existing} -- not re-initializing.")
+    top = git_toplevel(root)
+    if top and top != root:
+        die(
+            f"{root} is inside an existing git repo ({top}). A coordination root must "
+            f"be its own repo -- pick a dedicated directory, or run init at {top} only "
+            f"if that directory is truly the coordination root."
+        )
+
+    (root / "issues").mkdir(parents=True, exist_ok=True)
+    (root / "issues" / ".gitkeep").write_text("")
+    save(root, {"parties": [], "issues": []})
+    (root / ".gitignore").write_text((TEMPLATES / "gitignore").read_text())
+    (root / "CLAUDE.md").write_text(
+        (TEMPLATES / "claude.md").read_text().replace("<parent>", root.name)
+    )
+
+    if not top:
+        git(root, "init", "-q", check=False)
+    commit(
+        root,
+        "chore: initialize coordination ledger",
+        "CLAUDE.md",
+        "index.json",
+        "issues",
+        ".gitignore",
+    )
+    print(
+        f"Initialized coordination ledger at {root}. "
+        f"Register parties with `/coordination-ledger:register`."
+    )
+    return 0
+
+
+def cmd_register(args) -> int:
+    root = require_root(args.cwd)
+    path = args.path.strip("/")
+    if not path or path == ".":
+        die("--path must be a non-empty relative path under the root.")
+    if os.path.isabs(args.path) or ".." in Path(path).parts:
+        die(
+            f"--path must be relative and stay under the root (no absolute paths, no '..'): {args.path!r}"
+        )
+    target = root / path
+    try:
+        target.resolve().relative_to(root.resolve())
+    except ValueError:
+        die(f"{args.path!r} resolves outside the coordination root.")
+    if not (target / ".git").exists():
+        die(f"{target} is not a git repo/submodule (no .git). Register a repo path.")
+    label = args.label or slugify(Path(path).name)
+    with locked(root):
+        data = load(root)
+        if party_by_label(data, label):
+            die(f"label '{label}' is already registered.")
+        if any(p["path"] == path for p in data["parties"]):
+            die(f"path '{path}' is already registered.")
+        data["parties"].append({"label": label, "path": path})
+        save(root, data)
+        commit(root, f"ledger: register party {label} ({path})", "index.json")
+    print(f"Registered party '{label}' -> {path}.")
+    return 0
+
+
+def _read_body() -> str:
+    return "" if sys.stdin.isatty() else sys.stdin.read().strip()
+
+
+def cmd_open(args) -> int:
+    root = require_root(args.cwd)
+    body = _read_body()
+    with locked(root):
+        data = load(root)
+        labels = [p["label"] for p in data["parties"]]
+        if args.author not in labels:
+            die(
+                f"author '{args.author}' is not a registered party ({', '.join(labels) or 'none'})."
+            )
+        actor = args.actor
+        if not actor:
+            others = [lab for lab in labels if lab != args.author]
+            if len(others) == 1:
+                actor = others[0]
+            elif not others:
+                die(
+                    "no other party is registered to act on this issue -- register one "
+                    "with `/coordination-ledger:register` first."
+                )
+            else:
+                die("more than two parties registered -- pass --actor.")
+        if actor not in labels or actor == args.author:
+            die(f"invalid actor '{actor}'.")
+
+        number = next_number(data)
+        slug = slugify(args.description)
+        sha = git_head(party_abspath(root, party_by_label(data, args.author)))
+        fname = body_filename(number, slug)
+        (root / "issues" / fname).write_text(
+            f"# {issue_tag(number, slug)}\n\n" + format_entry(args.author, sha, body)
+        )
+        data["issues"].append(
+            {
+                "number": number,
+                "slug": slug,
+                "author": args.author,
+                "actor": actor,
+                "status": "open",
+                "since": today(),
+                "resolved": None,
+                "description": args.description,
+            }
+        )
+        save(root, data)
+        commit(root, f"ledger: open {issue_tag(number, slug)}", "index.json", f"issues/{fname}")
+    print(f"Opened issue {issue_tag(number, slug)} ({args.author} -> {actor}).")
+    return 0
+
+
+def cmd_reply(args) -> int:
+    root = require_root(args.cwd)
+    body = _read_body()
+    with locked(root):
+        data = load(root)
+        issue = issue_by_number(data, args.number) or die(f"no issue #{args.number}.")
+        if issue["status"] != "open":
+            die(
+                f"issue {issue_tag(issue['number'], issue['slug'])} is already "
+                f"'{issue['status']}' (resolved {issue['resolved']}) -- not re-resolving."
+            )
+        actor = issue["actor"]
+        caller = party_for(root, args.cwd, data)
+        if caller and caller["label"] != actor:
+            warn(
+                f"you appear to be party '{caller['label']}', but issue {args.number} awaits "
+                f"'{actor}' -- recording the reply as '{actor}'."
+            )
+        ap = party_by_label(data, actor)
+        sha = git_head(party_abspath(root, ap)) if ap else "none"
+        fname = body_filename(issue["number"], issue["slug"])
+        fpath = root / "issues" / fname
+        if not fpath.is_file():
+            die(f"issue body {fpath} missing.")
+        with fpath.open("a") as f:
+            f.write("\n" + format_entry(actor, sha, body))
+        issue["status"] = args.status
+        issue["resolved"] = today()
+        if args.description:
+            issue["description"] = args.description
+        save(root, data)
+        commit(
+            root,
+            f"ledger: {args.status} {issue_tag(issue['number'], issue['slug'])}",
+            "index.json",
+            f"issues/{fname}",
+        )
+    print(f"Recorded {args.status} on {issue_tag(issue['number'], issue['slug'])}.")
+    return 0
+
+
+def _filter(data: dict, party: "str | None" = None, status: "str | None" = None) -> list:
+    issues = data["issues"]
+    if status:
+        issues = [i for i in issues if i["status"] == status]
+    if party:
+        issues = [i for i in issues if i["actor"] == party]
+    return issues
+
+
+def _render(issues: list) -> None:
+    if not issues:
+        print("(none)")
+        return
+    for i in sorted(issues, key=lambda x: x["number"]):
+        print(
+            f"{issue_tag(i['number'], i['slug'])}  [{i['status']}]  act:{i['actor']}  "
+            f"since:{i['since']}  {i['description']}"
+        )
+
+
+def cmd_list(args) -> int:
+    root = require_root(args.cwd)
+    _render(_filter(load(root), party=args.party, status=args.status))
+    return 0
+
+
+def cmd_check(args) -> int:
+    root = require_root(args.cwd)
+    data = load(root)
+    party = args.party
+    if not party:
+        pty = party_for(root, args.cwd, data)
+        party = pty["label"] if pty else None
+    if not party:
+        die(
+            "could not determine your party -- pass --party (registered: "
+            f"{', '.join(p['label'] for p in data['parties']) or 'none'})."
+        )
+    _render(_filter(data, party=party, status="open"))
+    return 0
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="coordination-ledger", add_help=True)
+    sub = ap.add_subparsers(dest="op", required=True)
+
+    def add_cwd(p):
+        p.add_argument("--cwd", default=os.getcwd())
+
+    p = sub.add_parser("context")
+    add_cwd(p)
+    p.set_defaults(fn=cmd_context)
+    p = sub.add_parser("init")
+    add_cwd(p)
+    p.set_defaults(fn=cmd_init)
+    p = sub.add_parser("register")
+    add_cwd(p)
+    p.add_argument("--path", required=True)
+    p.add_argument("--label")
+    p.set_defaults(fn=cmd_register)
+    p = sub.add_parser("open")
+    add_cwd(p)
+    p.add_argument("--author", required=True)
+    p.add_argument("--actor")
+    p.add_argument("--description", required=True)
+    p.set_defaults(fn=cmd_open)
+    p = sub.add_parser("reply")
+    add_cwd(p)
+    p.add_argument("--number", type=int, required=True)
+    p.add_argument("--status", required=True, choices=RESOLVED_STATUSES)
+    p.add_argument("--description")
+    p.set_defaults(fn=cmd_reply)
+    p = sub.add_parser("list")
+    add_cwd(p)
+    p.add_argument("--party")
+    p.add_argument("--status", choices=STATUSES)
+    p.set_defaults(fn=cmd_list)
+    p = sub.add_parser("check")
+    add_cwd(p)
+    p.add_argument("--party")
+    p.set_defaults(fn=cmd_check)
+
+    args = ap.parse_args(argv)
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

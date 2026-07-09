@@ -1,0 +1,8 @@
+{
+  "name": "coordination-ledger",
+  "version": "0.1.0",
+  "description": "Cross-repo coordination ledger -- a local, never-pushed issue tracker for repos under a common parent (e.g. paper + codebase). A Python program owns a JSON index (index.json); agent-driven per-operation commands (init, register, open, reply, check) are thin wrappers over it (no hooks). Parties are registered incrementally at any relative path, including submodules. Zero footprint in the party repos.",
+  "author": {
+    "name": "pietrbr"
+  }
+}
