@@ -14,14 +14,15 @@ issue body (allocating the number, freezing the slug, and stamping the `ref:` SH
 2. `description` = a short one-line summary of the change (from `$ARGUMENTS`, or
    ask). Draft the body: one or two lines on what changed and why the other side
    cares, plus optional orientation (not an implementation plan).
-3. Actor (who must act): with exactly two parties the program picks the other one;
-   with more, choose the target party and pass `--actor <label>`.
-4. **Preview in chat**: the `description`, the author -> actor direction, and the
+3. Actors (who must act next): with exactly two parties the program defaults to the
+   other one; otherwise pass `--actor <label[,label]>` (repeatable or
+   comma-separated -- more than one party can be on the hook).
+4. **Preview in chat**: the `description`, the author -> actors direction, and the
    body prose. Get the user's approval.
 5. Create it -- pass the approved body on stdin:
    ```
    printf '%s' "<approved body>" | coordination-ledger open \
-     --author <party_label> --description "<description>" [--actor <label>]
+     --author <party_label> --description "<description>" [--actor <label[,label]>]
    ```
    The program allocates the next number, derives+freezes the slug, stamps
    `ref: <author>@<sha>` from the author repo's HEAD, writes the body file, updates

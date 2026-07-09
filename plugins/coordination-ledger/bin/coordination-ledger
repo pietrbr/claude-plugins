@@ -11,14 +11,20 @@ State lives in the coordination root -- the nearest ancestor of the cwd holding
 absolute paths are computed at runtime. The ledger is a local git repo: every
 mutation is committed, never pushed.
 
+An issue is a living thread: `author` is fixed (who opened it), `actors` is the
+reassignable list of parties whose action is pending now (empty once closed).
+A reply either reassigns `actors` (pass the ball, stays open) or closes the issue
+(`done`/`divergent`).
+
 Subcommands:
-  context   [--cwd D]                                        resolve root/party/etc (JSON)
-  init      [--cwd D]                                        scaffold a new ledger here
-  register  --path REL [--label L] [--cwd D]                 add a party
-  open      --author L [--actor L] --description D [--cwd D]  (body prose on stdin)
-  reply     --number N --status done|divergent [--description D] [--cwd D]  (stdin)
-  list      [--party L] [--status S] [--cwd D]               filter issues (table)
-  check     [--party L] [--cwd D]                            issues awaiting a party
+  context   [--cwd D]                                          resolve root/party/etc (JSON)
+  init      [--cwd D]                                          scaffold a new ledger here
+  register  --path REL [--label L] [--cwd D]                   add a party
+  open      --author L --actor L[,L] --description D [--cwd D]  (body prose on stdin)
+  reply     --number N (--to L[,L] | --status done|divergent) [--description D]
+            [--as L] [--cwd D]                                 (body prose on stdin)
+  list      [--party L] [--status S] [--cwd D]                 filter issues (table)
+  check     [--party L] [--cwd D]                              issues awaiting a party
 """
 
 import argparse
@@ -69,6 +75,17 @@ def slugify(text: str, limit: int = 40) -> str:
         out = cand
     # Hard-cap even a single oversized first word so the filename can't blow past NAME_MAX.
     return out[:limit].strip("-") or "issue"
+
+
+def parse_labels(values: "list[str] | None") -> list:
+    """Flatten repeated and/or comma-separated --actor/--to values into a deduped list."""
+    out: list = []
+    for v in values or []:
+        for part in v.split(","):
+            part = part.strip()
+            if part and part not in out:
+                out.append(part)
+    return out
 
 
 # ---- root / party resolution ----------------------------------------------
@@ -169,6 +186,19 @@ def body_filename(number: int, slug: str) -> str:
 def format_entry(label: str, sha: str, body: str) -> str:
     # The one place the structured entry (heading / date / ref / body) is written.
     return f"### {label}\n- date: {today()}\n- ref: {label}@{sha}\n\n{body}\n"
+
+
+def resolve_responder(root: Path, args, data: dict, labels: list) -> str:
+    """Who is adding this entry: --as if given, else the cwd's party."""
+    responder = args.as_party
+    if not responder:
+        pty = party_for(root, args.cwd, data)
+        responder = pty["label"] if pty else None
+    if not responder:
+        die("could not determine who is responding -- pass --as <label>.")
+    if responder not in labels:
+        die(f"responder '{responder}' is not a registered party ({', '.join(labels) or 'none'}).")
+    return responder
 
 
 # ---- git helpers (local only; never push) ---------------------------------
@@ -318,11 +348,11 @@ def cmd_open(args) -> int:
             die(
                 f"author '{args.author}' is not a registered party ({', '.join(labels) or 'none'})."
             )
-        actor = args.actor
-        if not actor:
+        actors = parse_labels(args.actor)
+        if not actors:
             others = [lab for lab in labels if lab != args.author]
             if len(others) == 1:
-                actor = others[0]
+                actors = others
             elif not others:
                 die(
                     "no other party is registered to act on this issue -- register one "
@@ -330,8 +360,11 @@ def cmd_open(args) -> int:
                 )
             else:
                 die("more than two parties registered -- pass --actor.")
-        if actor not in labels or actor == args.author:
-            die(f"invalid actor '{actor}'.")
+        for a in actors:
+            if a not in labels:
+                die(f"actor '{a}' is not a registered party ({', '.join(labels)}).")
+        if not any(a != args.author for a in actors):
+            die("at least one actor must be a party other than the author.")
 
         number = next_number(data)
         slug = slugify(args.description)
@@ -345,21 +378,27 @@ def cmd_open(args) -> int:
                 "number": number,
                 "slug": slug,
                 "author": args.author,
-                "actor": actor,
+                "actors": actors,
                 "status": "open",
-                "since": today(),
-                "resolved": None,
+                "date_opened": today(),
+                "date_resolved": None,
                 "description": args.description,
             }
         )
         save(root, data)
         commit(root, f"ledger: open {issue_tag(number, slug)}", "index.json", f"issues/{fname}")
-    print(f"Opened issue {issue_tag(number, slug)} ({args.author} -> {actor}).")
+    print(f"Opened issue {issue_tag(number, slug)} ({args.author} -> {', '.join(actors)}).")
     return 0
 
 
 def cmd_reply(args) -> int:
     root = require_root(args.cwd)
+    to = parse_labels(args.to)
+    if bool(to) == bool(args.status):
+        die(
+            "pass exactly one of --to <label...> (reassign, stays open) or "
+            "--status done|divergent (close the issue)."
+        )
     body = _read_body()
     with locked(root):
         data = load(root)
@@ -367,35 +406,40 @@ def cmd_reply(args) -> int:
         if issue["status"] != "open":
             die(
                 f"issue {issue_tag(issue['number'], issue['slug'])} is already "
-                f"'{issue['status']}' (resolved {issue['resolved']}) -- not re-resolving."
+                f"'{issue['status']}' -- open a new issue instead of reopening."
             )
-        actor = issue["actor"]
-        caller = party_for(root, args.cwd, data)
-        if caller and caller["label"] != actor:
+        labels = [p["label"] for p in data["parties"]]
+        responder = resolve_responder(root, args, data, labels)
+        for t in to:  # validate reassignment targets BEFORE writing the entry
+            if t not in labels:
+                die(f"--to '{t}' is not a registered party ({', '.join(labels)}).")
+        if responder not in issue["actors"]:
             warn(
-                f"you appear to be party '{caller['label']}', but issue {args.number} awaits "
-                f"'{actor}' -- recording the reply as '{actor}'."
+                f"'{responder}' is not among the current actors {issue['actors']} -- "
+                f"responding anyway."
             )
-        ap = party_by_label(data, actor)
-        sha = git_head(party_abspath(root, ap)) if ap else "none"
+
+        sha = git_head(party_abspath(root, party_by_label(data, responder)))
         fname = body_filename(issue["number"], issue["slug"])
         fpath = root / "issues" / fname
         if not fpath.is_file():
             die(f"issue body {fpath} missing.")
         with fpath.open("a") as f:
-            f.write("\n" + format_entry(actor, sha, body))
-        issue["status"] = args.status
-        issue["resolved"] = today()
+            f.write("\n" + format_entry(responder, sha, body))
+
         if args.description:
             issue["description"] = args.description
+        if to:
+            issue["actors"] = to
+            action = f"pass {issue_tag(issue['number'], issue['slug'])} to {', '.join(to)}"
+        else:
+            issue["status"] = args.status
+            issue["actors"] = []
+            issue["date_resolved"] = today()
+            action = f"{args.status} {issue_tag(issue['number'], issue['slug'])}"
         save(root, data)
-        commit(
-            root,
-            f"ledger: {args.status} {issue_tag(issue['number'], issue['slug'])}",
-            "index.json",
-            f"issues/{fname}",
-        )
-    print(f"Recorded {args.status} on {issue_tag(issue['number'], issue['slug'])}.")
+        commit(root, f"ledger: {action}", "index.json", f"issues/{fname}")
+    print(f"Recorded: {action}.")
     return 0
 
 
@@ -404,7 +448,7 @@ def _filter(data: dict, party: "str | None" = None, status: "str | None" = None)
     if status:
         issues = [i for i in issues if i["status"] == status]
     if party:
-        issues = [i for i in issues if i["actor"] == party]
+        issues = [i for i in issues if party in i["actors"]]
     return issues
 
 
@@ -413,9 +457,10 @@ def _render(issues: list) -> None:
         print("(none)")
         return
     for i in sorted(issues, key=lambda x: x["number"]):
+        actors = ",".join(i["actors"]) or "-"
         print(
-            f"{issue_tag(i['number'], i['slug'])}  [{i['status']}]  act:{i['actor']}  "
-            f"since:{i['since']}  {i['description']}"
+            f"{issue_tag(i['number'], i['slug'])}  [{i['status']}]  actors:{actors}  "
+            f"opened:{i['date_opened']}  {i['description']}"
         )
 
 
@@ -462,14 +507,16 @@ def main(argv=None) -> int:
     p = sub.add_parser("open")
     add_cwd(p)
     p.add_argument("--author", required=True)
-    p.add_argument("--actor")
+    p.add_argument("--actor", action="append", default=[], help="repeatable or comma-separated")
     p.add_argument("--description", required=True)
     p.set_defaults(fn=cmd_open)
     p = sub.add_parser("reply")
     add_cwd(p)
     p.add_argument("--number", type=int, required=True)
-    p.add_argument("--status", required=True, choices=RESOLVED_STATUSES)
+    p.add_argument("--to", action="append", default=[], help="reassign actors (stays open)")
+    p.add_argument("--status", choices=RESOLVED_STATUSES, help="close the issue")
     p.add_argument("--description")
+    p.add_argument("--as", dest="as_party", help="the responding party (default: cwd party)")
     p.set_defaults(fn=cmd_reply)
     p = sub.add_parser("list")
     add_cwd(p)

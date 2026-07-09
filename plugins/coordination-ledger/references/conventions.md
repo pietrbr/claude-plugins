@@ -26,7 +26,7 @@ A root-level CLAUDE.md may add project vocabulary but not override the protocol.
   party (e.g. a submodule). `label` is one short token descriptive of
   function/scope (`code`, `paper`, `code-mc`), unique within the root.
 - The label is the party's name on every surface: resolution (deepest matching path
-  wins), entry headings (`### code`), the issue `actor`, and commit refs
+  wins), entry headings (`### code`), the issue `actors` list, and commit refs
   (`ref: code@<sha>`). Absolute paths are never stored -- the program computes them
   as `<root>/<path>`, so the ledger stays portable.
 - Registered incrementally: `init` seeds the initial set (>= 2), `register` adds
@@ -34,32 +34,39 @@ A root-level CLAUDE.md may add project vocabulary but not override the protocol.
 
 ## Issues and entries
 
-- An issue is one cross-boundary thread. Its metadata lives in `index.json`
-  `issues`: `number` (integer, global monotonic, immutable, never recycled),
-  `slug` (kebab of the description, frozen at open -- the filename token),
-  `author`, `actor`, `status`, `since`, `resolved`, and `description` (a short
-  one-line summary; set at open, updated at close). `description` lives only in
-  `index.json`.
-- The issue's prose lives in the body file `issues/NNNN-<slug>.md`: a heading
-  `# NNNN -- <slug>`, then up to two entries, one per party. Each entry is
-  `### <label>`, then `- date: <YYYY-MM-DD>`, `- ref: <label>@<sha>` (the
-  source-repo commit), then a body (orientation, not an implementation plan;
-  ~half a page max).
-- A new issue always takes the next free number (floored at max existing + 1). A
-  reply appends the actor's entry into the same body file.
+- An issue is a living cross-boundary thread. Its metadata lives in `index.json`
+  `issues`: `number` (integer, global monotonic, immutable, never recycled), `slug`
+  (kebab of the description, frozen at open -- the filename token), `author` (fixed:
+  who opened it), `actors` (the reassignable list of parties whose action is pending
+  NOW -- empty once closed), `status`, `date_opened`, `date_resolved`, and
+  `description` (a short one-line summary; set at open, may be updated on any reply).
+- The prose lives in the body file `issues/NNNN-<slug>.md`: a heading
+  `# NNNN -- <slug>`, then one or more entries in chronological order. Each entry is
+  `### <label>` (the responder), then `- date: <YYYY-MM-DD>`, `- ref: <label>@<sha>`
+  (the source-repo commit), then a body (orientation, not an implementation plan).
+- A new issue always takes the next free number. Each reply appends the responder's
+  entry to the same body file -- a thread can hold more than two entries.
 
-## Status (in index.json)
+## Status and the `actors` list
 
-- `open` -- the `actor` must act.
-- `done` -- propagated; the reply entry records the resolving commit.
-- `divergent` -- the difference is intentional and will NOT propagate; a terminal
-  reconciliation verdict, recorded so nobody later "fixes" it.
-- Open vs resolved is a VIEW over the `status` field, not a stored table:
-  `check`/`list` filter it. "Awaiting party X" = `status == open` and `actor == X`.
+- `actors` is who must act next. `status`:
+  - `open` -- `actors` is non-empty; work is pending, owed by exactly those parties.
+  - `done` -- propagated/resolved; `actors` is empty.
+  - `divergent` -- the difference is intentional and will NOT propagate; `actors`
+    empty. A terminal verdict, recorded so nobody later "fixes" it.
+- "Awaiting party X" = `status == open` and `X in actors`; `check` is that query.
+- A reply does exactly one of:
+  - **pass the ball** (`reply --to <label...>`): append the responder's entry and
+    reassign `actors`; the issue stays `open`. Use this for a genuine back-and-forth
+    on the SAME issue (e.g. the actor answers and the ball returns to the author).
+  - **close** (`reply --status done|divergent`): append the entry, set the status,
+    clear `actors`, stamp `date_resolved`.
+- PREFER atomic issues: a distinct unit of work is a NEW issue, not an endless
+  thread. Use `--to` only when it is truly the same item bouncing back.
 
 ## Splitting an issue (a convention, not a status)
 
-- If one incoming request is really several units of work: resolve the original
+- If one incoming request is really several units of work: close the original
   `done` with a "superseded by NNNN-<slug>, MMMM-<slug>" note in the reply body,
   and open the new issues normally. Numbers are never recycled; history is in git.
 

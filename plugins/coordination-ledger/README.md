@@ -29,14 +29,16 @@ pushed**.
   path under the root (a top-level repo, or one nested inside another party -- e.g.
   a submodule). `path` is stored relative (portable); the label is a short token
   descriptive of function/scope (`code`, `paper`) used on every surface: entry
-  headings, the issue `actor`, and commit refs (`ref: code@<sha>`). Registered
-  incrementally -- `init` seeds the first ones, `register` adds more.
-- **Issue** -- metadata in `index.json` (number, author, actor, status, dates, a
-  one-line `description`); the prose lives in `issues/NNNN-<slug>.md` (up to two
-  entries, one per party).
-- **Status** (in `index.json`) -- `open` (the `actor` must act) / `done`
-  (propagated) / `divergent` (intentionally will not propagate). Open vs resolved
-  is a view over the field, not a stored table.
+  headings, the issue `actors` list, and commit refs (`ref: code@<sha>`).
+  Registered incrementally -- `init` seeds the first ones, `register` adds more.
+- **Issue** -- metadata in `index.json` (number, `author` = who opened it, `actors`
+  = the reassignable list of parties who must act next, `status`, `date_opened` /
+  `date_resolved`, a one-line `description`); the prose lives in
+  `issues/NNNN-<slug>.md` as a thread of entries (headed by party label).
+- **Status** (in `index.json`) -- `open` (`actors` non-empty; those parties owe an
+  action) / `done` (propagated) / `divergent` (intentionally will not propagate).
+  A `reply` either **passes the ball** (`--to`, reassigns `actors`, stays open) or
+  **closes** (`--status done|divergent`). Open vs resolved is a view over the field.
 
 **Zero footprint in the parties:** the party repos never reference the ledger --
 not in their text (no issue numbers in commits/code/prose) and not in their
@@ -49,8 +51,8 @@ the coordination root.
 | ----------------------------------------- | --------------------------------------------------------------------- |
 | `/coordination-ledger:init`               | Set up a coordination ledger over the repos under the current dir.    |
 | `/coordination-ledger:register <path>`    | Register an additional party (any relative path, incl. a submodule).  |
-| `/coordination-ledger:open <description>` | Open a new cross-repo issue (author = your party; actor = the other). |
-| `/coordination-ledger:reply <number>`     | Append your party's entry and set status (`done` / `divergent`).      |
+| `/coordination-ledger:open <description>` | Open a new cross-repo issue (author = your party; `actors` = who must act, default the other). |
+| `/coordination-ledger:reply <number>`     | Add your entry, then pass it on (`--to`) or close it (`--status done`/`divergent`). |
 | `/coordination-ledger:check [party]`      | List the open issues awaiting your party. Read-only.                  |
 
 Every write is drafted by the agent and **approved by the user** before it lands.

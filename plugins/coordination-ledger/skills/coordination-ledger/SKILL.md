@@ -58,9 +58,11 @@ the user before it lands.
   Registered with a meaningful label -- one short token descriptive of the repo's
   function or scope (e.g. `code`, `paper`) -- used everywhere the party is named.
   Registered incrementally (`init`, then `register`).
-- **Issue**: metadata in `index.json` (number, author, actor, `status` of
-  `open`/`done`/`divergent`, a one-line `description`); prose in the body file
-  `issues/NNNN-<slug>.md` (up to two entries, headed by party label).
+- **Issue**: metadata in `index.json` (number, `author` = who opened it, `actors` =
+  the reassignable list of parties who must act next, `status` of
+  `open`/`done`/`divergent`, `description`); prose in the body file
+  `issues/NNNN-<slug>.md` (a thread of entries headed by party label). A `reply`
+  either passes the ball (reassigns `actors`, stays open) or closes the issue.
 
 The full protocol (parties, issues/entries, statuses, splitting, the three
 reference rules) is in the plugin's `references/conventions.md`, which each

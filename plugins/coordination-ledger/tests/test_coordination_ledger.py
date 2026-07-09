@@ -100,9 +100,10 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         issue = self.index()["issues"][0]
         self.assertEqual(issue["number"], 1)
-        self.assertEqual(
-            (issue["author"], issue["actor"], issue["status"]), ("code", "paper", "open")
-        )
+        self.assertEqual(issue["author"], "code")
+        self.assertEqual(issue["actors"], ["paper"])
+        self.assertEqual(issue["status"], "open")
+        self.assertIsNone(issue["date_resolved"])
         self.assertEqual(self.next_num(), 2)
         body = (self.root / "issues" / f"0001-{issue['slug']}.md").read_text()
         self.assertIn("### code", body)
@@ -133,7 +134,8 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         issue = self.index()["issues"][0]
         self.assertEqual(issue["status"], "done")
-        self.assertIsNotNone(issue["resolved"])
+        self.assertEqual(issue["actors"], [])
+        self.assertIsNotNone(issue["date_resolved"])
         self.assertEqual(issue["description"], "handled")
         body = (self.root / "issues" / f"0001-{issue['slug']}.md").read_text()
         self.assertIn("### paper", body)
@@ -295,6 +297,91 @@ class LedgerTest(unittest.TestCase):
         slug = self.index()["issues"][0]["slug"]
         self.assertLessEqual(len(slug), 40)
         self.assertTrue((self.root / "issues" / f"0001-{slug}.md").is_file())
+
+    def test_reply_pass_the_ball_stays_open(self):
+        cl(
+            "open",
+            "--author",
+            "code",
+            "--description",
+            "x",
+            cwd=self.root / "evaluation",
+            stdin="req",
+        )
+        r = cl(
+            "reply", "--number", "1", "--to", "code", cwd=self.root / "paper", stdin="over to you"
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        issue = self.index()["issues"][0]
+        self.assertEqual(issue["status"], "open")
+        self.assertEqual(issue["actors"], ["code"])
+        self.assertIsNone(issue["date_resolved"])
+        self.assertIn("0001", cl("check", "--party", "code", cwd=self.root).stdout)
+        self.assertIn("(none)", cl("check", "--party", "paper", cwd=self.root).stdout)
+        body = (self.root / "issues" / f"0001-{issue['slug']}.md").read_text()
+        self.assertIn("### code", body)
+        self.assertIn("### paper", body)
+        self.assertIn("over to you", body)
+
+    def test_reply_requires_exactly_one_mode(self):
+        cl(
+            "open",
+            "--author",
+            "code",
+            "--description",
+            "x",
+            cwd=self.root / "evaluation",
+            stdin="b",
+        )
+        self.assertEqual(
+            cl("reply", "--number", "1", cwd=self.root / "paper", stdin="b").returncode, 1
+        )
+        self.assertEqual(
+            cl(
+                "reply",
+                "--number",
+                "1",
+                "--to",
+                "code",
+                "--status",
+                "done",
+                cwd=self.root / "paper",
+                stdin="b",
+            ).returncode,
+            1,
+        )
+
+    def test_open_rejects_author_only_actor(self):
+        r = cl(
+            "open",
+            "--author",
+            "code",
+            "--actor",
+            "code",
+            "--description",
+            "x",
+            cwd=self.root / "evaluation",
+            stdin="b",
+        )
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("other than the author", r.stderr)
+
+    def test_reply_to_invalid_label_leaves_no_orphan_entry(self):
+        cl(
+            "open",
+            "--author",
+            "code",
+            "--description",
+            "x",
+            cwd=self.root / "evaluation",
+            stdin="req",
+        )
+        slug = self.index()["issues"][0]["slug"]
+        r = cl("reply", "--number", "1", "--to", "bogus", cwd=self.root / "paper", stdin="oops")
+        self.assertEqual(r.returncode, 1)
+        body = (self.root / "issues" / f"0001-{slug}.md").read_text()
+        self.assertNotIn("oops", body)  # no orphan entry written before the die
+        self.assertEqual(body.count("### "), 1)  # only the original author entry
 
     def test_open_requires_another_party(self):
         solo = self.tmp / "solo"
