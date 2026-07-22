@@ -13,5 +13,5 @@ judgment stays with the user.
    - Dead links, orphan pages/concepts, contradictions (`> [!WARNING]`) -> REPORT.
    - Stale DERIVED concepts (a newer source appears to supersede a synthesized conclusion) -> FLAG and ASK the user; NEVER auto-update them.
    - Do NOT flag uncovered gaps in sources (those are fine).
-4. Save a dated report to `W/outputs/reports/YYYY-MM-DD-lint.md`.
+4. Save a dated report to `W/outputs/reports/YYYY-MM-DD-lint.md` -- a sibling of `wiki/`, NOT inside it (`W/outputs/`, never `W/wiki/outputs/`). Reports must stay out of the `wiki/` graph/embedding scan; if you find prior reports under `wiki/`, they drifted -- do not follow them.
 5. Append a lint entry to `W/log.md`. Commit. Never push.
