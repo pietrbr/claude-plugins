@@ -33,6 +33,11 @@
       "name": "coordination-ledger",
       "source": "./plugins/coordination-ledger",
       "description": "Cross-repo coordination ledger -- a local, never-pushed issue tracker for repos under a common parent (e.g. paper + codebase). A Python program owns a JSON index; per-operation commands (init, register, open, reply, check) are thin wrappers (no hooks); parties registered incrementally at any relative path (incl. submodules); zero footprint in the party repos."
+    },
+    {
+      "name": "session-recap",
+      "source": "./plugins/session-recap",
+      "description": "Reorient inside a long or wandering session: /recap prints a short, schematic summary of the current conversation -- status, original problem, decisions & drift, open items, and the next step. Chat-only."
     }
   ]
 }
