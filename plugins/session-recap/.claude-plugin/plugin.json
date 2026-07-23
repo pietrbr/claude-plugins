@@ -1,8 +1,0 @@
-{
-  "name": "session-recap",
-  "version": "0.1.0",
-  "description": "Reorient inside a long or wandering session: /recap prints a short, schematic summary of the current conversation -- status now, original problem, decisions & drift, open items, and the next step. Chat-only; writes nothing.",
-  "author": {
-    "name": "pietrbr"
-  }
-}
