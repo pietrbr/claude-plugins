@@ -53,6 +53,21 @@ A scope should name a **durable subsystem or concern**, not the file or module y
 
 If you're genuinely torn between reusing a scope and creating one, or between two existing scopes, don't guess - see "When to ask".
 
+## LaTeX-only repos
+
+When the changes are predominantly `.tex`/`.bib`/`.sty` files (a paper, thesis, or slide deck), the document is the product - map types to it, overriding the code-centric list above:
+
+- `feat` - the default: new content (sections, paragraphs, figures, tables, results). Adding text is a new feature of the document; reach for another type only when the commit adds no new content.
+- `fix` - corrections that change meaning: wrong math, wrong numbers, broken `\ref`/`\cite`, factual errors.
+- `style` - typos, grammar, wording polish, formatting; anything that doesn't change meaning.
+- `refactor` - restructuring with no content change: splitting files, moving sections, extracting macros.
+- `build` - preamble, packages, document class, Makefile/latexmk.
+- `docs` - only repo meta-files (README, CLAUDE.md), never the document itself.
+
+Scope: usually omit. Use the section/chapter name only when the commit is genuinely confined to one section; use `bib` or `figs` when it touches only references or figures. Since most commits end up as unscoped `feat`, the subject must name the content added ("add mobility sweep to results"), not just "add text".
+
+Body: rarely warranted - a prose diff describes itself, so rule 4's "multiple sub-changes" case almost never applies here. If the commit has an underlying rationale not evident from the text (e.g. "reviewer 2 asked for a mobility analysis", "sign error made the estimator diverge in simulation"), the body records that - and only that. Never enumerate the smaller edits bundled in: a LaTeX commit routinely carries many minor changes (typos, wording, spacing) that need no explanation, no bullet, no mention.
+
 ## When to ask
 
 Only ask in real ambiguity, never when one scope clearly fits - a question on every commit would defeat the purpose. When you do ask, use `AskUserQuestion` with a single question and 2-3 concrete options so the user decides in one click. Each option should be a real candidate: reuse an existing scope (note its usage count), reuse a different existing scope, or a specific new scope. Give enough context in the option descriptions - the relevant known scopes and a recent commit subject or two - so the choice is obvious without leaving the prompt. Then build the final message around their answer.
