@@ -1,0 +1,8 @@
+{
+  "name": "comment-deslop",
+  "version": "0.1.0",
+  "description": "De-slop the comments an agent just wrote. A PostToolUse hook intersects tree-sitter comment nodes with the git-changed lines and reports 13 slop rules (restatement, flow narration, history/decision recording, process leaks, benchmarks, stale references, verbosity, per-function comment budget, redundant docstrings); /deslop then fixes them. Offline, no model call, never edits a file itself.",
+  "author": {
+    "name": "pietrbr"
+  }
+}

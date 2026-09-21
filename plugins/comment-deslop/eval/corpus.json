@@ -1,0 +1,395 @@
+[
+ {
+  "id": "restate-increment",
+  "ext": ".py",
+  "code": "def f(counter):\n    # increment the counter\n    counter += 1\n    return counter\n",
+  "expect": "restatement"
+ },
+ {
+  "id": "restate-set-name",
+  "ext": ".ts",
+  "code": "function f(user: User) {\n  // set the user name\n  const userName = user.name;\n  return userName;\n}\n",
+  "expect": "restatement"
+ },
+ {
+  "id": "restate-open-file",
+  "ext": ".py",
+  "code": "def load(path):\n    # open the file\n    handle = open(path)\n    return handle.read()\n",
+  "expect": "restatement"
+ },
+ {
+  "id": "restate-return",
+  "ext": ".go",
+  "code": "func total(rows []Row) int {\n\t// return the total\n\treturn sumRows(rows)\n}\n",
+  "expect": "restatement"
+ },
+ {
+  "id": "restate-justified",
+  "ext": ".py",
+  "code": "def probe(value):\n    # open() is used because pathlib follows symlinks here\n    handle = open(value)\n    step1 = stage1(value)\n    step2 = stage2(value)\n    step3 = stage3(value)\n    step4 = stage4(value)\n    step5 = stage5(value)\n    step6 = stage6(value)\n    step7 = stage7(value)\n    step8 = stage8(value)\n    step9 = stage9(value)\n    return value\n",
+  "expect": null
+ },
+ {
+  "id": "restate-adds-reason",
+  "ext": ".py",
+  "code": "def probe(value):\n    # the wire protocol counts from one, not zero\n    value += 1\n    step1 = stage1(value)\n    step2 = stage2(value)\n    step3 = stage3(value)\n    step4 = stage4(value)\n    step5 = stage5(value)\n    step6 = stage6(value)\n    step7 = stage7(value)\n    step8 = stage8(value)\n    step9 = stage9(value)\n    return value\n",
+  "expect": null
+ },
+ {
+  "id": "flow-for",
+  "ext": ".py",
+  "code": "def f(items):\n    # loop over each item\n    for item in items:\n        handle(item)\n    return items\n",
+  "expect": "flow-narration"
+ },
+ {
+  "id": "flow-while",
+  "ext": ".rs",
+  "code": "fn drain(q: &mut Queue) {\n    // loop until the queue is empty\n    while !q.is_empty() {\n        q.pop();\n    }\n}\n",
+  "expect": "flow-narration"
+ },
+ {
+  "id": "flow-try",
+  "ext": ".py",
+  "code": "def f(call):\n    # handle the exception\n    try:\n        return call()\n    except ValueError:\n        return None\n",
+  "expect": "flow-narration"
+ },
+ {
+  "id": "flow-justified",
+  "ext": ".py",
+  "code": "def probe(value):\n    # items must stay in wire order, so do not sort\n    for item in value:\n        handle(item)\n    step1 = stage1(value)\n    step2 = stage2(value)\n    step3 = stage3(value)\n    step4 = stage4(value)\n    step5 = stage5(value)\n    step6 = stage6(value)\n    step7 = stage7(value)\n    step8 = stage8(value)\n    step9 = stage9(value)\n    return value\n",
+  "expect": null
+ },
+ {
+  "id": "conditional-narration",
+  "ext": ".py",
+  "code": "def f(item):\n    if item is None:\n        # If item is None, skip it\n        return None\n    return item\n",
+  "expect": "conditional-narration"
+ },
+ {
+  "id": "conditional-justified",
+  "ext": ".py",
+  "code": "def probe(value):\n    if value is None:\n        # None means the peer hung up before the header, not an empty frame\n        return None\n    step1 = stage1(value)\n    step2 = stage2(value)\n    step3 = stage3(value)\n    step4 = stage4(value)\n    step5 = stage5(value)\n    step6 = stage6(value)\n    step7 = stage7(value)\n    step8 = stage8(value)\n    step9 = stage9(value)\n    return value\n",
+  "expect": null
+ },
+ {
+  "id": "bare-identifier",
+  "ext": ".py",
+  "code": "def f():\n    # user_id\n    user_id = resolve()\n    return user_id\n",
+  "expect": "bare-identifier"
+ },
+ {
+  "id": "trailing-spared",
+  "ext": ".py",
+  "code": "def probe(value):\n    timeout = 5  # seconds\n    limit = 10  # limit\n    step1 = stage1(value)\n    step2 = stage2(value)\n    step3 = stage3(value)\n    step4 = stage4(value)\n    step5 = stage5(value)\n    step6 = stage6(value)\n    step7 = stage7(value)\n    step8 = stage8(value)\n    step9 = stage9(value)\n    return value\n",
+  "expect": null
+ },
+ {
+  "id": "history-changed-from",
+  "ext": ".py",
+  "code": "def call(url):\n    # Changed from old_api to new_api\n    return new_api(url)\n",
+  "expect": "history"
+ },
+ {
+  "id": "history-edit-narration",
+  "ext": ".py",
+  "code": "def clean(rows):\n    # Fixed: skip None entries\n    return [row for row in rows if row is not None]\n",
+  "expect": "history"
+ },
+ {
+  "id": "history-previously",
+  "ext": ".ts",
+  "code": "function shape(x: Row) {\n  // Previously this returned a dict\n  return toList(x);\n}\n",
+  "expect": "history"
+ },
+ {
+  "id": "history-used-to",
+  "ext": ".py",
+  "code": "def shape(row):\n    # this used to return a tuple\n    return list(row)\n",
+  "expect": "history"
+ },
+ {
+  "id": "history-unbuilt",
+  "ext": ".py",
+  "code": "def cache(key):\n    # I tried a shared cache but it did not help\n    return compute(key)\n",
+  "expect": "history"
+ },
+ {
+  "id": "history-decision",
+  "ext": ".rs",
+  "code": "fn hash(v: &str) -> u64 {\n    // chose fnv over siphash\n    fnv(v)\n}\n",
+  "expect": "history"
+ },
+ {
+  "id": "history-for-now",
+  "ext": ".py",
+  "code": "def parse(blob):\n    # assume utf-8 for now\n    return blob.decode()\n",
+  "expect": "history"
+ },
+ {
+  "id": "history-todo-revisit",
+  "ext": ".py",
+  "code": "def parse(blob):\n    # TODO: revisit once the codec lands\n    return blob.decode()\n",
+  "expect": "history"
+ },
+ {
+  "id": "history-contract-spared",
+  "ext": ".py",
+  "code": "def probe(value):\n    # the pattern used to build the key must match the index\n    key = key_for(value)\n    step1 = stage1(value)\n    step2 = stage2(value)\n    step3 = stage3(value)\n    step4 = stage4(value)\n    step5 = stage5(value)\n    step6 = stage6(value)\n    step7 = stage7(value)\n    step8 = stage8(value)\n    step9 = stage9(value)\n    return value\n",
+  "expect": null
+ },
+ {
+  "id": "process-leak-task",
+  "ext": ".py",
+  "code": "def run(job):\n    # task 4 wants this batched\n    return batch(job)\n",
+  "expect": "process-leak"
+ },
+ {
+  "id": "process-leak-review",
+  "ext": ".ts",
+  "code": "function run(job: Job) {\n  // as requested in review, keep the guard\n  return guard(job);\n}\n",
+  "expect": "process-leak"
+ },
+ {
+  "id": "benchmark",
+  "ext": ".py",
+  "code": "def pack(rows):\n    # ~144x fewer buffers, measured 812ms\n    return compact(rows)\n",
+  "expect": "benchmark"
+ },
+ {
+  "id": "benchmark-argued-spared",
+  "ext": ".py",
+  "code": "def probe(value):\n    # costs 1.3 ms per file because the digest is recomputed\n    digest = compact(value)\n    step1 = stage1(value)\n    step2 = stage2(value)\n    step3 = stage3(value)\n    step4 = stage4(value)\n    step5 = stage5(value)\n    step6 = stage6(value)\n    step7 = stage7(value)\n    step8 = stage8(value)\n    step9 = stage9(value)\n    return value\n",
+  "expect": null
+ },
+ {
+  "id": "benchmark-limit-spared",
+  "ext": ".py",
+  "code": "def probe(value):\n    # the broker rejects frames over 64 KB, so chunk before sending\n    chunks = split(value)\n    step1 = stage1(value)\n    step2 = stage2(value)\n    step3 = stage3(value)\n    step4 = stage4(value)\n    step5 = stage5(value)\n    step6 = stage6(value)\n    step7 = stage7(value)\n    step8 = stage8(value)\n    step9 = stage9(value)\n    return value\n",
+  "expect": null
+ },
+ {
+  "id": "reference-line",
+  "ext": ".py",
+  "code": "def run(job):\n    # see line 120 for the old approach\n    return go(job)\n",
+  "expect": "reference"
+ },
+ {
+  "id": "reference-untracked-file",
+  "ext": ".py",
+  "code": "def run(job):\n    # mirrors ../scratch/notes.py\n    return go(job)\n",
+  "expect": "reference"
+ },
+ {
+  "id": "reference-personal-notes",
+  "ext": ".py",
+  "code": "def run(job):\n    # written up in my notes\n    return go(job)\n",
+  "expect": "reference"
+ },
+ {
+  "id": "reference-spec-spared",
+  "ext": ".py",
+  "code": "def decode(frame):\n    # 3GPP TS 38.211 fixes the subcarrier order\n    return frame[::-1]\n",
+  "expect": null
+ },
+ {
+  "id": "reference-doi-spared",
+  "ext": ".py",
+  "code": "def solve(a):\n    # doi:10.1109/TIT.2006.885507 gives the bound\n    return bound(a)\n",
+  "expect": null
+ },
+ {
+  "id": "step-marker",
+  "ext": ".sh",
+  "code": "#!/usr/bin/env bash\nbuild() {\n  # Step 1: build the index\n  make index\n  make all\n  make check\n  make dist\n  make sign\n  make publish\n  make clean\n}\n",
+  "expect": "step-marker"
+ },
+ {
+  "id": "narrative-aside",
+  "ext": ".py",
+  "code": "def run(job):\n    # obviously we want the fast path here\n    return fast(job)\n",
+  "expect": "narrative"
+ },
+ {
+  "id": "narrative-emoji",
+  "ext": ".ts",
+  "code": "function run(j: Job) {\n  // \ud83d\ude80 blazing fast\n  return fast(j);\n}\n",
+  "expect": "narrative"
+ },
+ {
+  "id": "narrative-meta",
+  "ext": ".py",
+  "code": "def run(job):\n    # no comment needed here\n    return go(job)\n",
+  "expect": "narrative"
+ },
+ {
+  "id": "verbose-prose",
+  "ext": ".py",
+  "code": "def run(payload):\n    # This function takes the raw payload and, after validating every field\n    # against the schema, normalises the units and returns a dictionary that\n    # the caller can feed straight into the renderer without further work.\n    return shape(payload)\n",
+  "expect": "verbose"
+ },
+ {
+  "id": "verbose-doc-spared",
+  "ext": ".py",
+  "code": "def retry(call, attempts=3):\n    \"\"\"Retry `call`, backing off 100ms per attempt, and re-raise the last error.\"\"\"\n    return call()\n",
+  "expect": null
+ },
+ {
+  "id": "redundant-docstring",
+  "ext": ".py",
+  "code": "def add_one(counter):\n    \"\"\"Add one to counter.\"\"\"\n    return counter + 1\n",
+  "expect": "redundant-docstring",
+  "ast": true
+ },
+ {
+  "id": "docstring-contract-spared",
+  "ext": ".py",
+  "code": "def add_one(counter):\n    \"\"\"Raise ValueError when counter is already at the protocol ceiling.\"\"\"\n    return counter + 1\n",
+  "expect": null,
+  "ast": true
+ },
+ {
+  "id": "budget-small-fn",
+  "ext": ".py",
+  "code": "def tiny(value):\n    # clamp it\n    return min(value, 255)\n",
+  "expect": "budget",
+  "ast": true
+ },
+ {
+  "id": "budget-second-comment",
+  "ext": ".py",
+  "code": "def collect(rows, schema):\n    # rows arrive unsorted from the wire\n    a = one(rows)\n    b = two(a)\n    c = three(b)\n    # the schema fixes the units\n    d = four(c, schema)\n    e = five(d)\n    f = six(e)\n    g = seven(f)\n    return g\n",
+  "expect": "budget",
+  "ast": true
+ },
+ {
+  "id": "budget-one-allowed",
+  "ext": ".py",
+  "code": "def probe(value):\n    # rows arrive unsorted from the wire\n    value = normalise(value)\n    step1 = stage1(value)\n    step2 = stage2(value)\n    step3 = stage3(value)\n    step4 = stage4(value)\n    step5 = stage5(value)\n    step6 = stage6(value)\n    step7 = stage7(value)\n    step8 = stage8(value)\n    step9 = stage9(value)\n    return value\n",
+  "expect": null,
+  "ast": true
+ },
+ {
+  "id": "budget-justified-small-fn",
+  "ext": ".py",
+  "code": "def tiny(value):\n    # the protocol caps the field at one octet\n    return min(value, 255)\n",
+  "expect": null,
+  "ast": true
+ },
+ {
+  "id": "directives-spared",
+  "ext": ".py",
+  "code": "import os  # noqa: F401\n\n\ndef run():  # type: ignore[no-untyped-def]\n    # noqa\n    return os.getcwd()\n",
+  "expect": null
+ },
+ {
+  "id": "bdd-spared",
+  "ext": ".py",
+  "code": "def test_thing():\n    # given\n    thing = make()\n    # when\n    out = thing.run()\n    # then\n    assert out\n",
+  "expect": null
+ },
+ {
+  "id": "license-spared",
+  "ext": ".rs",
+  "code": "// SPDX-License-Identifier: Apache-2.0\n// Copyright 2026 the authors\n\nfn main() {}\n",
+  "expect": null
+ },
+ {
+  "id": "url-spared",
+  "ext": ".py",
+  "code": "def fetch():\n    # https://example.com/api#limits documents the cap\n    return call()\n",
+  "expect": null
+ },
+ {
+  "id": "shebang-spared",
+  "ext": ".sh",
+  "code": "#!/usr/bin/env bash\nset -euo pipefail\nmain \"$@\"\n",
+  "expect": null
+ },
+ {
+  "id": "string-not-comment",
+  "ext": ".py",
+  "code": "def run():\n    prefix = \"# increment the counter\"\n    return prefix\n",
+  "expect": null
+ },
+ {
+  "id": "shell-expansion-not-comment",
+  "ext": ".sh",
+  "code": "#!/usr/bin/env bash\nname=\"${path#prefix}\"\nmask=$((16#ff))\necho \"$name$mask\"\n",
+  "expect": null
+ },
+ {
+  "id": "ts-type-assertion",
+  "ext": ".ts",
+  "code": "function cast(x: unknown) {\n  const y = <Foo>x;\n  return y;\n}\n",
+  "expect": null
+ },
+ {
+  "id": "density-shell",
+  "ext": ".sh",
+  "code": "#!/usr/bin/env bash\nset -euo pipefail\n# the manifest names the layers\nmanifest=\"$1\"\n# the target is a registry ref\ntarget=\"$2\"\n# the digest is content-addressed\ndigest=$(compute \"$manifest\")\n# the registry wants the digest first\nupload \"$digest\"\n# then the manifest can land\npublish \"$manifest\" \"$target\"\n# and the cache is dropped\nprune\n",
+  "expect": "density"
+ },
+ {
+  "id": "advisory-dead-code",
+  "ext": ".py",
+  "code": "def probe(value):\n    # print(\"debug\", value)\n    step1 = stage1(value)\n    step2 = stage2(value)\n    step3 = stage3(value)\n    step4 = stage4(value)\n    step5 = stage5(value)\n    step6 = stage6(value)\n    step7 = stage7(value)\n    step8 = stage8(value)\n    step9 = stage9(value)\n    return value\n",
+  "expect": null,
+  "advisory": "dead-code"
+ },
+ {
+  "id": "advisory-dead-code-js",
+  "ext": ".js",
+  "code": "function probe(v) {\n  // console.log('debug', v);\n  return v;\n}\n",
+  "expect": null,
+  "advisory": "dead-code"
+ },
+ {
+  "id": "advisory-untracked-todo",
+  "ext": ".py",
+  "code": "def probe(value):\n    # TODO: fix later\n    step1 = stage1(value)\n    step2 = stage2(value)\n    step3 = stage3(value)\n    step4 = stage4(value)\n    step5 = stage5(value)\n    step6 = stage6(value)\n    step7 = stage7(value)\n    step8 = stage8(value)\n    step9 = stage9(value)\n    return value\n",
+  "expect": null,
+  "advisory": "untracked-todo"
+ },
+ {
+  "id": "advisory-todo-with-owner-spared",
+  "ext": ".py",
+  "code": "def probe(value):\n    # TODO(alice): fix later\n    step1 = stage1(value)\n    step2 = stage2(value)\n    step3 = stage3(value)\n    step4 = stage4(value)\n    step5 = stage5(value)\n    step6 = stage6(value)\n    step7 = stage7(value)\n    step8 = stage8(value)\n    step9 = stage9(value)\n    return value\n",
+  "expect": null,
+  "advisory": null
+ },
+ {
+  "id": "advisory-todo-with-key-spared",
+  "ext": ".py",
+  "code": "def probe(value):\n    # TODO: see ABC-123\n    step1 = stage1(value)\n    step2 = stage2(value)\n    step3 = stage3(value)\n    step4 = stage4(value)\n    step5 = stage5(value)\n    step6 = stage6(value)\n    step7 = stage7(value)\n    step8 = stage8(value)\n    step9 = stage9(value)\n    return value\n",
+  "expect": null,
+  "advisory": null
+ },
+ {
+  "id": "advisory-banner",
+  "ext": ".py",
+  "code": "def probe(value):\n    # --- collection ----------------\n    step1 = stage1(value)\n    step2 = stage2(value)\n    step3 = stage3(value)\n    step4 = stage4(value)\n    step5 = stage5(value)\n    step6 = stage6(value)\n    step7 = stage7(value)\n    step8 = stage8(value)\n    step9 = stage9(value)\n    return value\n",
+  "expect": null,
+  "advisory": "banner"
+ },
+ {
+  "id": "advisory-prose-not-dead-code",
+  "ext": ".py",
+  "code": "def probe(value):\n    # the broker requires the digest first\n    step1 = stage1(value)\n    step2 = stage2(value)\n    step3 = stage3(value)\n    step4 = stage4(value)\n    step5 = stage5(value)\n    step6 = stage6(value)\n    step7 = stage7(value)\n    step8 = stage8(value)\n    step9 = stage9(value)\n    return value\n",
+  "expect": null,
+  "advisory": null
+ },
+ {
+  "id": "lua-bare-marker",
+  "ext": ".lua",
+  "code": "local function probe(value)\n  --\n  -- set the value\n  value = 1\n  return value\n end\n",
+  "expect": "restatement",
+  "advisory": null
+ },
+ {
+  "id": "lua-trailing-spared",
+  "ext": ".lua",
+  "code": "local timeout = 5 -- seconds\nlocal limit = 10 -- limit\nreturn timeout, limit\n",
+  "expect": null,
+  "advisory": null
+ }
+]

@@ -25,6 +25,7 @@ Then install any plugin from it:
 | [conventional-commit-message](./plugins/conventional-commit-message) | Draft a Conventional Commits message from the conversation's changed files and current git state; infers type/scope from repo history and never commits or pushes.                                                         |
 | [coordination-ledger](./plugins/coordination-ledger)                 | Cross-repo coordination ledger -- a local, never-pushed issue tracker for repos under a common parent (e.g. a paper and its codebase). A Python program owns the JSON index; per-operation commands (init, register, open, reply, check) are thin wrappers over it.                    |
 | [session-summary](./plugins/session-summary)                         | Reorient inside a long or wandering session: `/summary` prints a schematic summary of the current conversation -- status, original problem, decisions and drift, open items, and the next step. Chat only.                    |
+| [comment-deslop](./plugins/comment-deslop)                           | De-slop the comments an agent just wrote: a `PostToolUse` hook intersects tree-sitter comment nodes with the git-changed lines and reports 14 slop rules, plus 4 advisory rules it reports to you and withholds from the model. `/deslop` fixes the findings. Offline, no model call, never edits a file itself.                    |
 
 ## License
 

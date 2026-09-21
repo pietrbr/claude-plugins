@@ -1,0 +1,2185 @@
+#!/usr/bin/env python3
+"""comment-deslop: report AI comment slop on the lines you just changed.
+
+Tree-sitter answers what is a comment and what code sits next to it; git answers
+which of them this session is accountable for. The two are intersected on line
+numbers: a comment is in scope when any of its lines changed since the diff base.
+The whole file is always parsed from disk (the hook runs PostToolUse, so disk and
+diff agree), so adjacency context is never a truncated fragment.
+
+Detection only -- it never edits a source file, and it never calls a model.
+tree-sitter is optional: without it the lexer runs and the four AST rules
+(flow-narration adjacency, budget, redundant-docstring, plus evidence-cited
+restatement) degrade or drop out.
+
+Usage:
+  comment-deslop [options] [paths...]
+  comment-deslop --hook              (tool payload JSON on stdin)
+  comment-deslop doctor              (report parser/git availability)
+  comment-deslop doctor --install    (create the parser venv; opt-in, never automatic)
+  comment-deslop eval                (labeled corpus + per-kind floors)
+
+Options:
+  --hook             read the edited file path from Claude Code hook JSON on stdin
+  --since REF        diff base for change scoping (default: HEAD)
+  --all              report every line, not only those changed since the base
+  --json             emit findings as JSON instead of a text report
+  --rules LIST       run only these comma-separated rule ids
+  --no-rules LIST    disable these comma-separated rule ids
+  --advisory LIST    advisory ids to note (or `all`); default: dead-code,
+                     untracked-todo,banner. Advisories never affect the exit
+                     code and never reach the model -- the user decides
+  --no-advisory      emit no advisory notes at all
+  --llm              print the triage candidate set as JSON (short unmatched
+                     comments plus the adjacent code line) and exit 0. The
+                     agent judges them -- this makes no model call and is not
+                     available to the hook
+  --list-rules       print the rule ids and exit
+  -h, --help         show this help
+
+Exit codes:
+  0  clean, unsupported path, or internal failure (never breaks the edit loop)
+  2  findings reported
+  3  COMMENT_DESLOP_REQUIRE_AST=1 was set and no parser could be loaded, so the
+     caller should try the next interpreter instead of accepting a silent
+     downgrade to the lexer
+"""
+
+import argparse
+import bisect
+import contextlib
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+
+VERBOSE_WORDS = 30
+VERBOSE_LINES = 3
+VERBOSE_LINE_MIN_WORDS = 12
+DOC_VERBOSE_WORDS = 90
+DOC_VERBOSE_LINES = 10
+SHELL_DENSITY_CEILING = 0.40
+DENSITY_MIN_REGION = 8
+RESTATE_COVERAGE = 0.6
+TERSE_COVERAGE = 0.5
+TERSE_WORDS = 3
+FLOW_COVERAGE = 0.6
+RESTATE_MAX_WORDS = 12
+FLOW_MAX_WORDS = 10
+CONDITIONAL_MAX_WORDS = 12
+BARE_MAX_TOKENS = 3
+DOCSTRING_MAX_WORDS = 15
+SMALL_FN_LINES = 10
+
+
+class Syntax(Enum):
+    HASH = "hash"
+    SLASH = "slash"
+    SHELL = "shell"
+    DASH = "dash"
+
+
+class Kind(Enum):
+    LINE = "line"
+    BLOCK = "block"
+    DOC = "doc"
+
+
+@dataclass(frozen=True)
+class Lang:
+    name: str
+    syntax: Syntax
+    ts_name: str | None
+    docstrings: bool = False
+
+
+LANGS = {
+    ".py": Lang("python", Syntax.HASH, "python", docstrings=True),
+    ".pyi": Lang("python", Syntax.HASH, "python", docstrings=True),
+    ".js": Lang("javascript", Syntax.SLASH, "javascript"),
+    ".jsx": Lang("javascript", Syntax.SLASH, "javascript"),
+    ".mjs": Lang("javascript", Syntax.SLASH, "javascript"),
+    ".cjs": Lang("javascript", Syntax.SLASH, "javascript"),
+    ".tsx": Lang("tsx", Syntax.SLASH, "tsx"),
+    ".ts": Lang("typescript", Syntax.SLASH, "typescript"),
+    ".mts": Lang("typescript", Syntax.SLASH, "typescript"),
+    ".cts": Lang("typescript", Syntax.SLASH, "typescript"),
+    ".rs": Lang("rust", Syntax.SLASH, "rust"),
+    ".go": Lang("go", Syntax.SLASH, "go"),
+    ".c": Lang("c", Syntax.SLASH, "c"),
+    ".h": Lang("c", Syntax.SLASH, "c"),
+    ".cc": Lang("cpp", Syntax.SLASH, "cpp"),
+    ".cpp": Lang("cpp", Syntax.SLASH, "cpp"),
+    ".cxx": Lang("cpp", Syntax.SLASH, "cpp"),
+    ".hh": Lang("cpp", Syntax.SLASH, "cpp"),
+    ".hpp": Lang("cpp", Syntax.SLASH, "cpp"),
+    ".java": Lang("java", Syntax.SLASH, "java"),
+    ".lua": Lang("lua", Syntax.DASH, "lua"),
+    ".sh": Lang("shell", Syntax.SHELL, "bash"),
+    ".bash": Lang("shell", Syntax.SHELL, "bash"),
+    ".zsh": Lang("shell", Syntax.SHELL, "bash"),
+    ".ksh": Lang("shell", Syntax.SHELL, "bash"),
+    ".yml": Lang("yaml", Syntax.HASH, "yaml"),
+    ".yaml": Lang("yaml", Syntax.HASH, "yaml"),
+    ".toml": Lang("toml", Syntax.HASH, "toml"),
+    ".dockerfile": Lang("dockerfile", Syntax.HASH, "dockerfile"),
+}
+
+DOCKERFILE_NAMES = ("dockerfile", "containerfile")
+
+
+def lang_for(path: str) -> Lang | None:
+    name = os.path.basename(path).lower()
+    for stem in DOCKERFILE_NAMES:
+        if name == stem or name.startswith(stem + "."):
+            return LANGS[".dockerfile"]
+    return LANGS.get(os.path.splitext(name)[1])
+
+
+@dataclass
+class Comment:
+    line: int
+    end_line: int
+    kind: Kind
+    raw: str
+    prose: str
+    trailing: bool
+    next_code: str = ""
+    prev_code: str = ""
+    next_node: str = ""
+    fn: int | None = None
+    run: int = -1
+    header: bool = False
+
+
+@dataclass
+class Unit:
+    index: int
+    name: str
+    params: tuple[str, ...]
+    start: int
+    end: int
+    body_lines: int
+    doc: Comment | None = None
+    comments: list[Comment] = field(default_factory=list)
+
+
+@dataclass
+class Finding:
+    line: int
+    rule: str
+    text: str
+    why: str
+    end_line: int = 0
+    code: str = ""
+    extra: tuple[str, ...] = ()
+    ident: str = ""
+
+    @property
+    def span(self) -> str:
+        if self.end_line > self.line:
+            return f"L{self.line}-{self.end_line}"
+        return f"L{self.line}"
+
+
+NEVER = (
+    r"^#!",
+    r"-\*-\s*coding",
+    r"\b(noqa|nosec|nolint|NOSONAR|pragma|pylint:|mypy:|ruff:|flake8:|isort:|coverage:)",
+    r"\btype:\s*ignore\b",
+    r"\b(eslint-|prettier-ignore|@ts-ignore|@ts-expect-error|@ts-nocheck|tslint:)",
+    r"\bshellcheck\s+(disable|source)\b",
+    r"\b(clippy::|rustfmt::|#\[|golangci|go:generate|go:build|nolintlint)",
+    r"\bfmt:\s*(on|off)\b",
+    r"\bSPDX-License-Identifier\b",
+    r"\b(Copyright|Licensed under|All rights reserved)\b",
+    r"\b(TODO|FIXME|HACK|XXX|NOTE|SAFETY|SECURITY|PERF|WARNING|BUG)\b",
+    r"https?://",
+    r"\b[A-Z][A-Z0-9]{1,9}-\d+\b",
+    r"^\s*(given|when|then|arrange|act|assert)\b\s*[:.-]?\s*$",
+    r"^\s*(type:|:param|:return|:rtype|:raises)",
+    r"^\s*@(param|returns?|throws?|example|deprecated|see|typedef|template|override)\b",
+    r"^\s*(Args|Arguments|Returns|Yields|Raises|Attributes|Parameters|Examples?)\s*:?\s*$",
+    r"^\s*#\s*(Safety|Panics|Errors|Examples)\s*$",
+    r"^\s*\.{3}\s*$",
+    r"^[\s\-=*_~#+.\u2500-\u257f]*$",
+    r"^-{3,}|^={3,}|-{3,}\s*$|={3,}\s*$",
+    r"[\u2500-\u257f]{3,}",
+)
+
+NEVER_OVERRIDE = (
+    r"\brevisit\b",
+    r"\bfor now\b",
+    r"\bkept? for (backward|backwards|back-?compat)",
+    r"\balternatives? considered\b",
+    r"\bchose \w+ over \w+",
+)
+
+CITATION = r"\b(?:doi:|10\.\d{4,}/|arxiv|rfc\s*\d+|3gpp\s+t[sr]|ieee\s+\d|iso\s+\d|etsi)\b"
+
+NEVER_RE = re.compile("|".join(NEVER))
+CITATION_RE = re.compile(CITATION, re.IGNORECASE)
+NEVER_OVERRIDE_RE = re.compile("|".join(NEVER_OVERRIDE), re.IGNORECASE)
+EMOJI_RE = re.compile(
+    "[\U0001f000-\U0001faff☀-➿⬀-⯿️←-⇿]"
+)
+
+
+def is_allowed(prose: str, raw: str) -> bool:
+    if CITATION_RE.search(prose):
+        return True
+    if NEVER_OVERRIDE_RE.search(prose):
+        return False
+    return bool(NEVER_RE.search(raw)) or bool(NEVER_RE.search(prose))
+
+
+PRESCRIBED = re.compile(
+    r"^\s*(?:@(?:param|returns?|throws?|example|deprecated|see|typedef|template)\b"
+    r"|(?:Args|Arguments|Parameters|Returns|Yields|Raises|Attributes|Examples?|Type"
+    r"|Other Parameters|See Also|References)\s*:?\s*$"
+    r"|#\s*(?:Safety|Panics|Errors|Examples)\s*$"
+    r"|-{3,}\s*$|={3,}\s*$)",
+    re.MULTILINE,
+)
+
+FREE_SECTIONS = re.compile(
+    r"^\s*(?:Notes?|Warnings?|Remarks?|Description|Summary)\s*:?\s*$", re.IGNORECASE
+)
+
+MARKER_STRIP = re.compile(r"^\s*(?://+[!/]?|#+:?|/\*+|\*+/?|--+\[?\[?|--+|\"\"\"|''')")
+MARKER_TAIL = re.compile(r"(?:\*/|\]\]|\"\"\"|''')\s*$")
+
+
+def to_prose(raw: str, kind: Kind) -> str:
+    lines = []
+    for line in raw.splitlines():
+        line = MARKER_TAIL.sub("", MARKER_STRIP.sub("", line)).strip()
+        lines.append(line)
+    text = "\n".join(lines).strip()
+    if kind is not Kind.DOC:
+        return text
+    return doc_prose(text)
+
+
+def doc_prose(text: str) -> str:
+    kept, budgeted = [], True
+    for line in text.splitlines():
+        if FREE_SECTIONS.match(line):
+            budgeted = True
+            continue
+        if PRESCRIBED.match(line):
+            budgeted = False
+            continue
+        if budgeted:
+            kept.append(line)
+    return "\n".join(kept).strip()
+
+
+def prose_lines(prose: str) -> int:
+    return len([line for line in prose.splitlines() if line.strip()])
+
+
+def word_count(prose: str) -> int:
+    return len(re.findall(r"[A-Za-z][A-Za-z'_-]*", prose))
+
+
+STOPWORD_TEXT = """a an the this that these those is are was were be been being do does did
+    of to in on at for from with by as into over per and or not no if then else
+    it its we our you your they their he she i me my us all any each every some
+    here there now new old just also only very much many more most less least
+    so but than which who whom whose what when where why how one two both
+    same other another such own too can will would should could may might must
+    have has had get gets got make makes made use uses used using via out up
+    down off again further once about above below between through during before
+    after until while because since although though unless whether"""
+
+STOPWORDS = frozenset(STOPWORD_TEXT.split())
+
+VERB_MAP = {
+    r"\+=|\+\+": ("increment", "increase", "add", "bump", "advance", "count"),
+    r"-=|--": ("decrement", "decrease", "subtract", "reduce", "lower"),
+    r"\*=": ("multiply", "scale", "double"),
+    r"/=|//=": ("divide", "halve"),
+    r"\breturn\b": ("return", "returns", "give", "yield", "produce"),
+    r"\b(raise|throw|panic)\b": ("raise", "throw", "error", "fail", "panic"),
+    r"\b(import|require|include|use)\b": ("import", "require", "include", "load"),
+    r"\b(del|delete|remove|pop|unset)\b": ("delete", "remove", "drop", "clear"),
+    r"\.append\(|\.push\(|\.add\(|\.insert\(": ("append", "add", "push", "insert"),
+    r"\.(open|read|write|close)\(|\bopen\(": ("open", "read", "write", "close"),
+    r"\b(def|fn|func|function)\b": ("define", "helper", "function"),
+    r"\b(class|struct|impl)\b": ("class", "define", "struct"),
+    r"\b(await|async)\b": ("await", "async", "wait"),
+    r"\b(sort|sorted)\b": ("sort", "order"),
+    r"\b(len|count|size)\b": ("length", "count", "size"),
+    r"=(?!=)": ("set", "assign", "initialize", "init", "create", "store", "build"),
+}
+
+FLOW_NODES = {
+    "for": ("for", "loop", "loops", "iterate", "iterates", "each", "through", "over"),
+    "while": ("while", "loop", "loops", "until", "repeat"),
+    "if": ("if", "check", "checks", "whether", "guard", "handle", "case", "when"),
+    "try": ("try", "catch", "except", "error", "errors", "exception", "handle"),
+    "switch": ("switch", "match", "case", "dispatch", "branch"),
+    "with": ("with", "context", "open", "scope"),
+}
+
+FLOW_KEYWORDS = {
+    "for": "for",
+    "while": "while",
+    "if": "if",
+    "elif": "if",
+    "try": "try",
+    "switch": "switch",
+    "match": "switch",
+    "with": "with",
+    "foreach": "for",
+    "unless": "if",
+}
+
+JUSTIFY_RE = re.compile(
+    r"\b(because|since|so that|otherwise|avoids?|workaround|upstream|spec|rfc"
+    r"|required by|must|cannot|does not|doesn't|intentional|deliberate|invariant"
+    r"|assumes?|guarantees?|beware|caveat|bug in|limitation)\b",
+    re.IGNORECASE,
+)
+
+
+CONSTRAINT_SYSTEM = (
+    r"\b(protocol|spec|specification|standard|firmware|hardware|kernel|driver"
+    r"|vendor|upstream|api|wire|broker|server|browser|compiler|linker|scheduler"
+    r"|allocator|register|peripheral|device|grammar|schema|codec|format)\b"
+)
+CONSTRAINT_VERB = (
+    r"\b(caps?|capped|limits?|limited|requires?|required|rejects?|expects?"
+    r"|mandates?|forbids?|disallows?|guarantees?|reserves?|fixes|pins|only"
+    r"|at most|at least|no more than)\b"
+)
+CONSTRAINT_RE = re.compile(f"(?=.*{CONSTRAINT_SYSTEM})(?=.*{CONSTRAINT_VERB})", re.IGNORECASE | re.DOTALL)
+
+
+def content_words(prose: str) -> list[str]:
+    words = [w.lower() for w in re.findall(r"[A-Za-z][A-Za-z'_-]*", prose)]
+    return [w for w in words if w not in STOPWORDS and len(w) > 1]
+
+
+def code_tokens(code: str) -> set[str]:
+    tokens = set()
+    for ident in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", code):
+        tokens.add(ident.lower())
+        parts = re.split(r"_+|(?<=[a-z0-9])(?=[A-Z])", ident)
+        for part in parts:
+            if len(part) > 2:
+                tokens.add(part.lower())
+    return tokens
+
+
+def verb_hits(code: str) -> set[str]:
+    hits = set()
+    for pattern, words in VERB_MAP.items():
+        if re.search(pattern, code):
+            hits.update(words)
+    return hits
+
+
+def stem(word: str) -> str:
+    for suffix in ("ing", "ies", "ed", "es", "s"):
+        if len(word) > len(suffix) + 2 and word.endswith(suffix):
+            return word[: -len(suffix)]
+    return word
+
+
+def matches_token(word: str, tokens: set[str]) -> str | None:
+    if word in tokens:
+        return word
+    root = stem(word)
+    for token in tokens:
+        if root == stem(token):
+            return token
+    return None
+
+
+TRIPLES = ('"""', "'''")
+HEREDOC_RE = re.compile(r"<<-?\s*[\"']?([A-Za-z_][A-Za-z0-9_]*)[\"']?")
+DEF_RE = re.compile(r"^\s*(async\s+def|def|class)\b")
+
+
+class Scanner:
+    def __init__(self, src: str, lang: Lang):
+        self.lines = src.splitlines()
+        self.lang = lang
+        self.out: list[Comment] = []
+        self.block: tuple[str, bool, int, list[str]] | None = None
+        self.heredoc: str | None = None
+
+    def scan(self) -> list[Comment]:
+        for number, line in enumerate(self.lines, start=1):
+            if self.block is not None:
+                self.continue_block(number, line)
+                continue
+            if self.heredoc is not None:
+                if line.strip() == self.heredoc:
+                    self.heredoc = None
+                continue
+            self.scan_line(number, line)
+        self.close_block(len(self.lines))
+        return self.out
+
+    def continue_block(self, number: int, line: str) -> None:
+        closer, _, _, body = self.block
+        end = line.find(closer)
+        if end < 0:
+            body.append(line)
+            return
+        body.append(line[: end + len(closer)])
+        self.close_block(number)
+        self.scan_line(number, line[end + len(closer):], offset=end + len(closer))
+
+    def close_block(self, number: int) -> None:
+        if self.block is None:
+            return
+        _, is_comment, start, body = self.block
+        self.block = None
+        if not is_comment:
+            self.note_string(start, number, "\n".join(body))
+            return
+        raw = "\n".join(body)
+        kind = Kind.DOC if raw.lstrip().startswith("/**") else Kind.BLOCK
+        self.add(start, number, kind, raw, trailing=False)
+
+    def note_string(self, start: int, end: int, raw: str) -> None:
+        if not self.lang.docstrings:
+            return
+        previous = self.previous_code(start)
+        if not DEF_RE.match(previous) and not (start == 1 or not previous):
+            return
+        if previous and not previous.rstrip().endswith(":"):
+            return
+        self.add(start, end, Kind.DOC, raw, trailing=False)
+
+    def previous_code(self, start: int) -> str:
+        for index in range(start - 2, -1, -1):
+            if self.lines[index].strip():
+                return self.lines[index]
+        return ""
+
+    def add(self, start: int, end: int, kind: Kind, raw: str, trailing: bool) -> None:
+        self.out.append(
+            Comment(
+                line=start,
+                end_line=end,
+                kind=kind,
+                raw=raw,
+                prose=to_prose(raw, kind),
+                trailing=trailing,
+            )
+        )
+
+    def scan_line(self, number: int, text: str, offset: int = 0) -> None:
+        index = 0
+        while index < len(text):
+            char = text[index]
+            if char == "\\":
+                index += 2
+                continue
+            if char in "\"'`":
+                index = self.skip_string(number, text, index, offset)
+                continue
+            marker = self.comment_at(text, index, offset)
+            if marker is not None:
+                self.open_comment(number, text, index, offset, marker)
+                return
+            if self.lang.syntax is Syntax.SHELL:
+                match = HEREDOC_RE.match(text, index)
+                if match is not None:
+                    self.heredoc = match.group(1)
+                    index = match.end()
+                    continue
+            index += 1
+
+    def skip_string(self, number: int, text: str, index: int, offset: int) -> int:
+        for triple in TRIPLES:
+            if text.startswith(triple, index):
+                end = text.find(triple, index + 3)
+                if end >= 0:
+                    return end + 3
+                self.block = (triple, False, number, [text[index:]])
+                return len(text)
+        quote = text[index]
+        cursor = index + 1
+        while cursor < len(text):
+            if text[cursor] == "\\":
+                cursor += 2
+                continue
+            if text[cursor] == quote:
+                return cursor + 1
+            cursor += 1
+        return len(text)
+
+    def comment_at(self, text: str, index: int, offset: int) -> str | None:
+        syntax = self.lang.syntax
+        if syntax in (Syntax.HASH, Syntax.SHELL) and text[index] == "#":
+            if syntax is Syntax.SHELL and index + offset > 0:
+                before = text[index - 1] if index else " "
+                if before not in " \t":
+                    return None
+            return "#"
+        if syntax is Syntax.SLASH:
+            if text.startswith("//", index):
+                return "//"
+            if text.startswith("/*", index):
+                return "/*"
+            return None
+        if syntax is Syntax.DASH and text.startswith("--", index):
+            return "--[[" if text.startswith("--[[", index) else "--"
+        return None
+
+    def open_comment(
+        self, number: int, text: str, index: int, offset: int, marker: str
+    ) -> None:
+        trailing = bool(text[:index].strip()) or offset > 0
+        if marker in ("/*", "--[["):
+            closer = "*/" if marker == "/*" else "]]"
+            rest = text[index:]
+            end = rest.find(closer, len(marker))
+            if end >= 0:
+                self.add(number, number, Kind.BLOCK, rest[: end + len(closer)], trailing)
+                self.scan_line(number, rest[end + len(closer):], offset + index + end)
+                return
+            self.block = (closer, True, number, [rest])
+            return
+        raw = text[index:]
+        kind = Kind.LINE
+        if self.lang.syntax is Syntax.SLASH and re.match(r"^//[/!]", raw):
+            kind = Kind.DOC
+        self.add(number, number, kind, raw, trailing)
+
+
+def mark_header(src: str, runs: list[list[Comment]]) -> None:
+    """A file-level header: the first run, with nothing but blank lines above it."""
+    if not runs:
+        return
+    lines = src.splitlines()
+    first = runs[0][0].line
+    if any(lines[number - 1].strip() for number in range(1, first)):
+        return
+    for comment in runs[0]:
+        comment.header = True
+
+
+def group_runs(comments: list[Comment]) -> list[list[Comment]]:
+    runs: list[list[Comment]] = []
+    for comment in sorted(comments, key=lambda item: item.line):
+        previous = runs[-1][-1] if runs else None
+        joins = (
+            previous is not None
+            and previous.kind is comment.kind
+            and not previous.trailing
+            and not comment.trailing
+            and comment.line == previous.end_line + 1
+        )
+        if not joins:
+            runs.append([])
+        runs[-1].append(comment)
+        comment.run = len(runs) - 1
+    return runs
+
+
+def extract_lex(src: str, lang: Lang) -> list[Comment]:
+    return Scanner(src, lang).scan()
+
+
+FN_NODES = (
+    "function_definition",
+    "function_declaration",
+    "function_item",
+    "method_definition",
+    "method_declaration",
+    "function_expression",
+    "arrow_function",
+    "constructor_declaration",
+)
+
+NODE_FLOW = (
+    ("for", "for"),
+    ("while", "while"),
+    ("if", "if"),
+    ("conditional", "if"),
+    ("try", "try"),
+    ("switch", "switch"),
+    ("match", "switch"),
+    ("with", "with"),
+)
+
+
+TS_PACKAGE = "tree-sitter-language-pack"
+
+
+def venv_dir() -> Path:
+    cache = os.environ.get("XDG_CACHE_HOME") or os.path.join(
+        os.path.expanduser("~"), ".cache"
+    )
+    return Path(cache) / "comment-deslop" / "venv"
+
+
+def venv_python() -> Path:
+    if os.name == "nt":
+        return venv_dir() / "Scripts" / "python.exe"
+    return venv_dir() / "bin" / "python"
+
+
+def install_parser() -> int:
+    """Create a plugin-owned venv and put the parsers in it. Opt-in only."""
+    target = venv_dir()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    python = venv_python()
+    if not python.exists():
+        created = create_venv(target)
+        if created != 0:
+            return created
+    command = install_command(python)
+    if command is None:
+        sys.stderr.write(
+            "comment-deslop: the venv has no pip and uv is absent;"
+            f" run: <python> -m pip install {TS_PACKAGE}\n"
+        )
+        return 1
+    print(f"installing {TS_PACKAGE} into {target}")
+    done = subprocess.run(command, check=False)
+    if done.returncode != 0:
+        sys.stderr.write("comment-deslop: the install failed\n")
+        return done.returncode
+    print(f"done -- the hook will use {python}")
+    return 0
+
+
+def create_venv(target: Path) -> int:
+    """uv if it is here (faster), else the stdlib venv module, which is always here."""
+    if shutil.which("uv") is not None:
+        done = subprocess.run(["uv", "venv", "--quiet", str(target)], check=False)
+        if done.returncode == 0:
+            return 0
+    print(f"creating {target}")
+    done = subprocess.run([sys.executable, "-m", "venv", str(target)], check=False)
+    if done.returncode != 0:
+        sys.stderr.write("comment-deslop: could not create the venv\n")
+    return done.returncode
+
+
+def install_command(python: Path) -> list[str] | None:
+    """A uv-made venv carries no pip, so ask uv to fill it instead."""
+    probe = subprocess.run(
+        [str(python), "-c", "import pip"], capture_output=True, check=False
+    )
+    if probe.returncode == 0:
+        return [str(python), "-m", "pip", "install", "--quiet", "--upgrade", TS_PACKAGE]
+    if shutil.which("uv") is not None:
+        return ["uv", "pip", "install", "--quiet", "--python", str(python), TS_PACKAGE]
+    return None
+
+
+def get_parser(lang: Lang):
+    if lang.ts_name is None:
+        return None
+    for module, attr in (
+        ("tree_sitter_language_pack", "get_parser"),
+        ("tree_sitter_languages", "get_parser"),
+    ):
+        with contextlib.suppress(Exception):
+            return getattr(__import__(module, fromlist=[attr]), attr)(lang.ts_name)
+    return None
+
+
+@dataclass
+class Parsed:
+    comments: list[Comment]
+    units: list[Unit]
+    source: str
+    parser: object | None = None
+    runs: list[list[Comment]] = field(default_factory=list)
+
+
+def node_flow(node_type: str) -> str:
+    for needle, flow in NODE_FLOW:
+        if needle in node_type:
+            return flow
+    return ""
+
+
+def walk(node):
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        stack.extend(reversed(current.children))
+
+
+def node_name(node) -> str:
+    field = node.child_by_field_name("name")
+    if field is not None:
+        return field.text.decode("utf8", "replace")
+    return ""
+
+
+def node_params(node) -> tuple[str, ...]:
+    field = node.child_by_field_name("parameters")
+    if field is None:
+        return ()
+    text = field.text.decode("utf8", "replace")
+    return tuple(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text))
+
+
+DOC_PARENTS = ("block", "module", "expression_statement")
+
+
+def is_docstring(node) -> bool:
+    parent = node.parent
+    if parent is None:
+        return False
+    if parent.type == "expression_statement":
+        parent = parent.parent
+        if parent is None:
+            return False
+    if parent.type not in DOC_PARENTS:
+        return False
+    first = next((child for child in parent.children if child.is_named), None)
+    if first is None:
+        return False
+    return first.start_byte == node.start_byte or (
+        first.type == "expression_statement" and first.start_byte == node.start_byte
+    )
+
+
+def extract_ast(src: str, lang: Lang, parser) -> Parsed | None:
+    try:
+        tree = parser.parse(src.encode("utf8"))
+    except Exception:  # noqa: BLE001 -- an unparseable file degrades to the lexer
+        return None
+    comments: list[Comment] = []
+    units: list[Unit] = []
+    starts: dict[int, str] = {}
+    for node in walk(tree.root_node):
+        starts.setdefault(node.start_byte, node.type)
+        if "comment" in node.type:
+            if node.parent is not None and "comment" in node.parent.type:
+                continue
+            raw = node.text.decode("utf8", "replace")
+            if not raw.strip():
+                continue
+            kind = Kind.DOC if re.match(r"^(/\*\*|//[/!])", raw.lstrip()) else Kind.LINE
+            if raw.lstrip().startswith("/*") and kind is not Kind.DOC:
+                kind = Kind.BLOCK
+            comments.append(
+                Comment(
+                    line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    kind=kind,
+                    raw=raw,
+                    prose=to_prose(raw, kind),
+                    trailing=False,
+                )
+            )
+            continue
+        if node.type in FN_NODES:
+            body = node.child_by_field_name("body") or node
+            units.append(
+                Unit(
+                    index=len(units),
+                    name=node_name(node),
+                    params=node_params(node),
+                    start=node.start_point[0] + 1,
+                    end=node.end_point[0] + 1,
+                    body_lines=body.end_point[0] - body.start_point[0] + 1,
+                )
+            )
+        if lang.docstrings and node.type == "string" and is_docstring(node):
+            comments.append(
+                Comment(
+                    line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    kind=Kind.DOC,
+                    raw=node.text.decode("utf8", "replace"),
+                    prose="",
+                    trailing=False,
+                )
+            )
+    for comment in comments:
+        if comment.kind is Kind.DOC and not comment.prose:
+            comment.prose = to_prose(comment.raw, Kind.DOC)
+    keys = sorted(starts)
+    apply_ast_context(src, comments, keys, starts)
+    units.sort(key=lambda unit: (unit.start, -unit.end))
+    return Parsed(comments=comments, units=units, source=src, parser=parser)
+
+
+def apply_ast_context(src: str, comments, keys, starts) -> None:
+    offsets = line_offsets(src)
+    for comment in comments:
+        end_byte = offsets[min(comment.end_line + 1, len(offsets) - 1)]
+        position = bisect.bisect_right(keys, end_byte)
+        while position < len(keys):
+            node_type = starts[keys[position]]
+            if "comment" not in node_type:
+                comment.next_node = node_type
+                break
+            position += 1
+
+
+def line_offsets(src: str) -> list[int]:
+    offsets = [0, 0]
+    total = 0
+    for line in src.splitlines(keepends=True):
+        total += len(line)
+        offsets.append(total)
+    return offsets
+
+
+def apply_context(src: str, comments: list[Comment], lang: Lang) -> None:
+    lines = src.splitlines()
+    covered = set()
+    for comment in comments:
+        for number in range(comment.line, comment.end_line + 1):
+            covered.add(number)
+    for comment in comments:
+        comment.trailing = is_trailing(lines, comment)
+        comment.next_code = nearest_code(lines, covered, comment.end_line, 1)
+        comment.prev_code = nearest_code(lines, covered, comment.line, -1)
+
+
+def is_trailing(lines: list[str], comment: Comment) -> bool:
+    if comment.line != comment.end_line:
+        return False
+    if comment.line > len(lines):
+        return False
+    body = lines[comment.line - 1]
+    head = next(iter(comment.raw.splitlines()), "")
+    if not head:
+        return comment.trailing
+    position = body.find(head)
+    if position < 0:
+        return comment.trailing
+    return bool(body[:position].strip())
+
+
+def nearest_code(lines: list[str], covered: set[int], anchor: int, step: int) -> str:
+    number = anchor + step
+    while 1 <= number <= len(lines):
+        if number not in covered and lines[number - 1].strip():
+            return lines[number - 1]
+        number += step
+    return ""
+
+
+def assign_units(src: str, comments: list[Comment], units: list[Unit]) -> None:
+    lines = src.splitlines()
+    covered = set()
+    for comment in comments:
+        covered.update(range(comment.line, comment.end_line + 1))
+    for unit in units:
+        unit.body_lines = sum(
+            1
+            for number in range(unit.start, min(unit.end, len(lines)) + 1)
+            if number not in covered and lines[number - 1].strip()
+        )
+    for comment in comments:
+        for unit in units:
+            if unit.start <= comment.line <= unit.end:
+                comment.fn = unit.index
+        if comment.fn is None:
+            continue
+        unit = units[comment.fn]
+        if comment.kind is Kind.DOC:
+            if unit.doc is None and comment.line <= unit.start + 2:
+                unit.doc = comment
+            continue
+        unit.comments.append(comment)
+
+
+def parse_file(path: str, src: str, lang: Lang) -> Parsed:
+    parser = get_parser(lang)
+    parsed = extract_ast(src, lang, parser) if parser is not None else None
+    if parsed is None:
+        parsed = Parsed(comments=extract_lex(src, lang), units=[], source=src)
+    apply_context(src, parsed.comments, lang)
+    parsed.runs = group_runs(parsed.comments)
+    mark_header(src, parsed.runs)
+    assign_units(src, parsed.comments, parsed.units)
+    return parsed
+
+
+def git(args: list[str], cwd: str) -> str | None:
+    try:
+        done = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    return done.stdout
+
+
+HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def changed_lines(path: str, since: str) -> set[int] | None:
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    if git(["rev-parse", "--show-toplevel"], directory) is None:
+        return None
+    if git(["ls-files", "--error-unmatch", path], directory) is None:
+        return None
+    diff = git(["diff", "-U0", "--no-color", since, "--", path], directory)
+    if diff is None:
+        return None
+    lines: set[int] = set()
+    for line in diff.splitlines():
+        match = HUNK_RE.match(line)
+        if match is None:
+            continue
+        start = int(match.group(1))
+        count = 1 if match.group(2) is None else int(match.group(2))
+        lines.update(range(start, start + count))
+    return lines
+
+
+def tracked(ref: str, base: str) -> bool:
+    """Resolve a comment's path reference against the whole repo, not just `base`."""
+    if git(["ls-files", "--error-unmatch", ref], base) is not None:
+        return True
+    root = git(["rev-parse", "--show-toplevel"], base)
+    if root is None:
+        return False
+    found = git(["ls-files", "--", ref, f"*/{ref}"], root.strip())
+    return bool(found and found.strip())
+
+
+HISTORY = (
+    ((r"^(changed|switched|renamed|moved|migrated|converted|replaced|updated)\s+(from|to)\b"
+      r"|\b(changed|switched|renamed|moved|migrated|converted|replaced)\s+from\b"
+      r".{0,40}\bto\b"),
+     "narrates a change that belongs in the commit message", False),
+    (r"^(was|formerly|previously)\b", "records a prior state", False),
+    (r"\bused to be\b", "records a prior state", False),
+    ((r"^(fixed|added|removed|deleted|refactored|renamed|bumped|simplified|cleaned"
+      r"|reverted|dropped|extracted|inlined|split|merged)\b"),
+     "narrates a completed edit", False),
+    (r"^(fix|add|remove|refactor|update|change|chore)\s*:", "carries a changelog prefix", False),
+    (r"\b(this|it|we|these|that|the code|the function|the method)\b[^.]{0,40}\bused to\b",
+     "describes what the code used to do", True),
+    (r"\b(before this|in the old)\b.{0,40}\b(we|it|this)\b",
+     "describes what the code used to do", True),
+    ((r"^(i|we)\s+(removed|added|tried|changed|refactored|switched|decided|kept|left"
+      r"|dropped|considered)\b"),
+     "first-person edit narration -- belongs in the PR", True),
+    (r"\btried\b.{0,60}\b(but|however|instead|did ?n[o']?t)\b",
+     "records a road not taken -- belongs in the PR", True),
+    (r"\bconsidered\b.{0,40}\b(but|instead)\b",
+     "records a road not taken -- belongs in the PR", True),
+    (r"\bkept? for (backward|backwards|back-?compat)",
+     "records a decision -- belongs in the commit message", True),
+    (r"\balternatives? considered\b", "records a decision -- belongs in the docs", True),
+    (r"\bchose \w+ over \w+", "records a decision -- belongs in the commit message", True),
+    (r"\brevisit\b", "defers a decision into the code", True),
+    (r"\b(for now|for the moment)\b", "defers a decision into the code", True),
+)
+
+PROCESS_LEAK = (
+    r"\b(task|phase|ticket|issue|pr|plan|item)\s*#?\d+\b",
+    r"\bper (the )?(plan|review|feedback)\b",
+    r"\bas (discussed|requested|agreed|mentioned above|noted above)\b",
+    r"\breview(er)?s? (said|asked|wants|requested)\b",
+    r"\baddress(ing|es|ed)? (the )?(comment|feedback|review)",
+    r"\b(see|per) the plan\b",
+)
+
+BENCHMARK_UNIT = (
+    r"\b\d+(?:\.\d+)?\s*(?:ms|us|µs|ns|sec|secs|seconds|minutes|MB|GB|KB|KiB|MiB|GiB)\b"
+    r"|(?<![:\w{])~?\d+(?:\.\d+)?\s*[x×](?![\w}])"
+    r"|\b\d+(?:\.\d+)?%"
+)
+BENCHMARK_CLAIM = (
+    r"\b(measured|benchmark|benchmarked|takes|took|faster|slower|speedup|fewer"
+    r"|smaller|larger|saves|saved|reduces|reduced|improvement|overhead|throughput)\b"
+)
+
+NARRATIVE = (
+    r"\b(note that|obviously|basically|simply|of course|as you can see|as we can see"
+    r"|don'?t worry|keep in mind|remember that|worth noting|interestingly"
+    r"|unfortunately|sadly|luckily|hopefully|essentially|in a nutshell"
+    r"|at the end of the day|let['\u2019]s|we['\u2019]ll|here we|now we)\b"
+)
+META = (
+    r"\b(?:this|the|a|no)\s+(?:comment|comments|docstring)s?\b(?![-\w])"
+    r"|^comments?\b(?![-\w])"
+)
+
+CODE_REF = (
+    r"\b[\w./-]*[\w-]\.(?:py|pyi|ts|tsx|js|jsx|mjs|rs|go|cc|cpp|hpp|java|sh|lua"
+    r"|ya?ml|toml|md)(?::\d+)?\b"
+)
+LINE_REF = r"\b(?:lines?|ln)\s+\d+\b"
+UNTRACKED_REF = (
+    r"\b(?:my|personal)\s+(?:notes?|wiki|doc|docs)\b"
+    r"|\bnotion\.so\b|\bin Notion\b"
+    r"|\b(?:obsidian|confluence|gdocs?|google docs?|slack thread|scratchpad)\b"
+    r"|\[\[[^\]\s][^\]]*\]\]"
+    r"|(?<![\w/])~/"
+)
+STEP_MARKER = (
+    r"^(?:step|phase|stage)\s*\d+\s*[:.)-]",
+    r"^\d+[.)]\s+\S",
+    r"^(?:first|second|third|fourth|then|next|finally|lastly)\s*[,:]",
+)
+
+HEADER_EXEMPT = frozenset({"verbose", "narrative", "density", "budget"})
+
+TRAILING_EXEMPT = frozenset(
+    {"restatement", "bare-identifier", "narrative", "conditional-narration", "process-leak"}
+)
+
+ADVISORY_ORDER = ("dead-code", "untracked-todo", "banner", "unreviewed")
+ADVISORY_DEFAULT = ("dead-code", "untracked-todo", "banner")
+ADVISORY_EXAMPLES = 2
+ADVISORY_HIDDEN = frozenset({"unreviewed"})
+ADVISORY_BLURB = {
+    "dead-code": "commented-out code",
+    "untracked-todo": "an intent marker with no ticket, issue or owner",
+    "banner": "a decorative divider or section label",
+    "unreviewed": "short and unmatched -- passed to --llm only",
+}
+UNREVIEWED_MAX_WORDS = 8
+
+NEVER_HARD = (
+    r"^#!",
+    r"-\*-\s*coding",
+    r"\b(noqa|nosec|nolint|NOSONAR|pragma|pylint:|mypy:|ruff:|flake8:|isort:|coverage:)",
+    r"\btype:\s*ignore\b",
+    r"\b(eslint-|prettier-ignore|@ts-ignore|@ts-expect-error|@ts-nocheck|tslint:)",
+    r"\bshellcheck\s+(disable|source)\b",
+    r"\b(clippy::|rustfmt::|#\[|golangci|go:generate|go:build)\b",
+    r"\bfmt:\s*(on|off)\b",
+    r"\bSPDX-License-Identifier\b",
+    r"\b(Copyright|Licensed under|All rights reserved)\b",
+)
+NEVER_HARD_RE = re.compile("|".join(NEVER_HARD))
+
+DEAD_CODE_STRUCTURAL = (
+    r"^[\w.\[\]\"']+\s*[-+*/|&]?=[^=]",
+    r"^[\w.-]+\s*:\s*\S*$",
+    r"^-\s+[\w.-]+\s*:",
+    r"^\[{1,2}[\w.-]+\]{1,2}\s*$",
+    r"^[\w.]+\(.*\)\s*;?$",
+    r"[;{}]\s*$",
+)
+DEAD_CODE_KEYWORD = (
+    (r"^(return|raise|throw|yield|break|continue|pass|import|from|export|const|let"
+     r"|var|def|class|func|fn|print|printf|assert|await|delete|new|echo|exit)\b"),
+)
+DEAD_CODE_STRUCTURAL_RE = re.compile("|".join(DEAD_CODE_STRUCTURAL))
+DEAD_CODE_KEYWORD_RE = re.compile("|".join(DEAD_CODE_KEYWORD))
+
+TODO_MARKER_RE = re.compile(r"\b(TODO|FIXME|XXX|HACK)\b")
+TODO_TRACKED_RE = re.compile(
+    r"\b[A-Z][A-Z0-9]{1,9}-\d+\b|https?://|#\d+|\b(TODO|FIXME|XXX|HACK)\([\w.@-]+\)"
+)
+
+BANNER_RE = re.compile(
+    r"^[\s\-=*_~#+.\u2500-\u257f]{3,}$"
+    r"|^[-=*_#\u2500-\u257f]{3,}"
+    r"|[-=*_#\u2500-\u257f]{3,}\s*$"
+    r"|^[A-Z][A-Z0-9 _/&-]{1,30}$"
+)
+BANNER_MAX_CHARS = 90
+
+RULE_ORDER = (
+    "bare-identifier",
+    "history",
+    "flow-narration",
+    "conditional-narration",
+    "narrative",
+    "restatement",
+    "process-leak",
+    "benchmark",
+    "reference",
+    "step-marker",
+    "redundant-docstring",
+    "verbose",
+    "budget",
+    "density",
+)
+
+
+@dataclass
+class Ctx:
+    path: str
+    base: str
+    lang: Lang
+    parsed: Parsed
+
+
+def rule_restatement(comment: Comment, ctx: Ctx) -> Finding | None:
+    if comment.kind is Kind.DOC or not comment.next_code:
+        return None
+    words = content_words(comment.prose)
+    if not words or len(words) > RESTATE_MAX_WORDS:
+        return None
+    if JUSTIFY_RE.search(comment.prose):
+        return None
+    tokens = code_tokens(comment.next_code)
+    verbs = verb_hits(comment.next_code)
+    verb_stems = {stem(verb) for verb in verbs}
+    identifiers, evidence = 0, []
+    for word in words:
+        hit = matches_token(word, tokens)
+        if hit is not None:
+            identifiers += 1
+            evidence.append(word if hit == word else f"{word}~{hit}")
+            continue
+        if word in verbs or stem(word) in verb_stems:
+            evidence.append(f"{word}<-operator")
+    floor = TERSE_COVERAGE if len(words) <= TERSE_WORDS else RESTATE_COVERAGE
+    if identifiers == 0 or len(evidence) / len(words) < floor:
+        return None
+    return finding(comment, "restatement",
+                   "restates the code below it (shares " + ", ".join(evidence[:4]) + ")")
+
+
+def rule_flow(comment: Comment, ctx: Ctx) -> Finding | None:
+    if comment.kind is Kind.DOC or word_count(comment.prose) > FLOW_MAX_WORDS:
+        return None
+    if JUSTIFY_RE.search(comment.prose):
+        return None
+    flow = node_flow(comment.next_node)
+    if not flow:
+        head = re.match(r"^\s*([A-Za-z_]+)", comment.next_code)
+        flow = FLOW_KEYWORDS.get(head.group(1).lower(), "") if head else ""
+    if not flow:
+        return None
+    words = content_words(comment.prose)
+    if not words:
+        return None
+    tokens = code_tokens(comment.next_code)
+    named = set(FLOW_NODES[flow])
+    if not set(words) & named:
+        return None
+    covered = sum(
+        1
+        for word in words
+        if word in named or matches_token(word, tokens) is not None
+    )
+    if covered / len(words) < FLOW_COVERAGE:
+        return None
+    return finding(comment, "flow-narration",
+                   f"names the `{flow}` the code below it already shows")
+
+
+def rule_conditional(comment: Comment, ctx: Ctx) -> Finding | None:
+    if comment.kind is Kind.DOC or word_count(comment.prose) > CONDITIONAL_MAX_WORDS:
+        return None
+    if not re.match(r"^(if|when|unless)\b[^,.]{0,50},\s*\w", comment.prose, re.IGNORECASE):
+        return None
+    if JUSTIFY_RE.search(comment.prose):
+        return None
+    words = content_words(comment.prose)
+    if not words:
+        return None
+    tokens = code_tokens(comment.prev_code + "\n" + comment.next_code)
+    covered = sum(1 for word in words if matches_token(word, tokens) is not None)
+    if covered / len(words) < RESTATE_COVERAGE:
+        return None
+    return finding(comment, "conditional-narration",
+                   "spells out a condition the surrounding code already states")
+
+
+def rule_bare_identifier(comment: Comment, ctx: Ctx) -> Finding | None:
+    if comment.kind is Kind.DOC or not comment.next_code:
+        return None
+    words = content_words(comment.prose)
+    if not words or len(words) > BARE_MAX_TOKENS:
+        return None
+    tokens = code_tokens(comment.next_code)
+    hits = [matches_token(word, tokens) for word in words]
+    if any(hit is None for hit in hits):
+        return None
+    return finding(comment, "bare-identifier",
+                   "repeats the identifier below it (" + ", ".join(words) + ")")
+
+
+def rule_history(comment: Comment, ctx: Ctx) -> Finding | None:
+    for pattern, why, exempt in HISTORY:
+        if exempt and comment.trailing:
+            continue
+        match = re.search(pattern, comment.prose, re.IGNORECASE | re.MULTILINE)
+        if match is not None:
+            return finding(comment, "history", cite(why, match))
+    return None
+
+
+def rule_process_leak(comment: Comment, ctx: Ctx) -> Finding | None:
+    for pattern in PROCESS_LEAK:
+        match = re.search(pattern, comment.prose, re.IGNORECASE)
+        if match is not None:
+            return finding(comment, "process-leak",
+                           cite("leaks the process that produced the code", match))
+    return None
+
+
+def cite(why: str, match: re.Match) -> str:
+    """Publish the phrase that convicted, so the reason is checkable."""
+    phrase = " ".join(match.group(0).split())[:40]
+    return f'{why} ("{phrase}")' if phrase else why
+
+
+def rule_benchmark(comment: Comment, ctx: Ctx) -> Finding | None:
+    if JUSTIFY_RE.search(comment.prose):
+        return None
+    if not re.search(BENCHMARK_UNIT, comment.prose):
+        return None
+    claim = re.search(BENCHMARK_CLAIM, comment.prose, re.IGNORECASE)
+    if claim is None:
+        return None
+    return finding(comment, "benchmark",
+                   cite("pins a measured snapshot that goes stale", claim))
+
+
+def rule_reference(comment: Comment, ctx: Ctx) -> Finding | None:
+    if ctx.lang.name in ("toml", "shell") and "[[" in comment.prose:
+        return None
+    if re.search(UNTRACKED_REF, comment.prose, re.IGNORECASE):
+        return finding(comment, "reference",
+                       "points at something outside the repository")
+    if re.search(LINE_REF, comment.prose, re.IGNORECASE):
+        return finding(comment, "reference", "pins a line number that will rot")
+    stale = []
+    for match in re.finditer(CODE_REF, comment.prose):
+        token = match.group(0)
+        if "/" not in token and ":" not in token:
+            continue
+        ref = token.split(":")[0]
+        if os.path.basename(ctx.path) == os.path.basename(ref):
+            continue
+        if not tracked(ref, ctx.base):
+            stale.append(token)
+    if not stale:
+        return None
+    return finding(comment, "reference",
+                   "points at untracked paths (" + ", ".join(stale[:3]) + ")")
+
+
+def rule_step_marker(comment: Comment, ctx: Ctx) -> Finding | None:
+    if ctx.parsed.runs[comment.run][0] is not comment:
+        return None
+    for pattern in STEP_MARKER:
+        match = re.match(pattern, comment.prose, re.IGNORECASE)
+        if match is not None:
+            return finding(comment, "step-marker",
+                           cite("numbers a step the code's order already gives", match))
+    return None
+
+
+def rule_narrative(comment: Comment, ctx: Ctx) -> Finding | None:
+    emoji = EMOJI_RE.search(comment.raw)
+    if emoji is not None:
+        return finding(comment, "narrative", cite("contains an emoji", emoji))
+    if comment.kind is Kind.DOC:
+        return None
+    meta = re.search(META, comment.prose, re.IGNORECASE | re.MULTILINE)
+    if meta is not None:
+        return finding(comment, "narrative", cite("is a comment about a comment", meta))
+    aside = re.search(NARRATIVE, comment.prose, re.IGNORECASE)
+    if aside is not None:
+        return finding(comment, "narrative",
+                       cite("is a chatty aside, not a constraint", aside))
+    return None
+
+
+def rule_verbose(run: list[Comment], ctx: Ctx) -> Finding | None:
+    live = [
+        item
+        for item in run
+        if not item.header
+        and not is_allowed(item.prose, item.raw)
+        and not code_shaped(item, ctx)
+    ]
+    if not live:
+        return None
+    is_doc = live[0].kind is Kind.DOC
+    max_words = DOC_VERBOSE_WORDS if is_doc else VERBOSE_WORDS
+    max_lines = DOC_VERBOSE_LINES if is_doc else VERBOSE_LINES
+    prose = "\n".join(item.prose for item in live)
+    words, lines = word_count(prose), prose_lines(prose)
+    long_prose = lines >= max_lines and words >= VERBOSE_LINE_MIN_WORDS
+    if words <= max_words and not long_prose:
+        return None
+    return finding(live[0], "verbose",
+                   f"runs {words} words over {lines} prose lines"
+                   f" (limit {max_words}/{max_lines - 1})",
+                   end_line=live[-1].end_line)
+
+
+def parses_as_code(body: str, ctx: Ctx) -> bool:
+    parser = ctx.parsed.parser
+    if parser is None:
+        return True
+    try:
+        tree = parser.parse(body.encode("utf8"))
+    except Exception:  # noqa: BLE001 -- an unparseable body is simply not code
+        return False
+    return not has_error(tree.root_node)
+
+
+def has_error(node) -> bool:
+    if node.type == "ERROR" or node.is_missing:
+        return True
+    return any(has_error(child) for child in node.children)
+
+
+def code_shaped(comment: Comment, ctx: Ctx) -> bool:
+    """Commented-out code: out of scope for the prose rules, advisory only.
+
+    A keyword opening (`return ...`) is prose as often as code, so it convicts
+    only when a parser confirms it; the structural shapes stand on their own.
+    A block is judged whole -- one line of a commented-out call rarely parses by
+    itself, and the run is what was commented out.
+    """
+    if comment.kind is Kind.DOC or comment.header:
+        return False
+    body = comment.prose.strip()
+    if not body:
+        return False
+    if shaped(body, ctx) and parses_as_code(body, ctx):
+        return True
+    return run_is_code(comment, ctx)
+
+
+def shaped(body: str, ctx: Ctx) -> bool:
+    if DEAD_CODE_STRUCTURAL_RE.search(body):
+        return True
+    return bool(DEAD_CODE_KEYWORD_RE.search(body)) and ctx.parsed.parser is not None
+
+
+def run_is_code(comment: Comment, ctx: Ctx) -> bool:
+    if comment.run < 0 or comment.run >= len(ctx.parsed.runs):
+        return False
+    run = ctx.parsed.runs[comment.run]
+    if len(run) < 2:
+        return False
+    lines = [item.prose.strip() for item in run if item.prose.strip()]
+    if not lines or not any(shaped(line, ctx) for line in lines):
+        return False
+    return parses_as_code("\n".join(lines), ctx)
+
+
+def advise_dead_code(comment: Comment, ctx: Ctx) -> Finding | None:
+    if not code_shaped(comment, ctx):
+        return None
+    return finding(comment, "dead-code", "the body parses as code, not prose")
+
+
+def advise_untracked_todo(comment: Comment, ctx: Ctx) -> Finding | None:
+    if not TODO_MARKER_RE.search(comment.raw):
+        return None
+    if TODO_TRACKED_RE.search(comment.raw):
+        return None
+    return finding(comment, "untracked-todo", "an intent marker with no ticket, issue or owner")
+
+
+def advise_banner(comment: Comment, ctx: Ctx) -> Finding | None:
+    body = comment.prose.strip()
+    if not body or len(body) > BANNER_MAX_CHARS:
+        return None
+    if not BANNER_RE.search(body):
+        return None
+    return finding(comment, "banner", "a decorative divider or section label")
+
+
+def advise_unreviewed(comment: Comment, ctx: Ctx) -> Finding | None:
+    if comment.kind is Kind.DOC or comment.trailing or comment.header:
+        return None
+    words = content_words(comment.prose)
+    if not words or len(words) > UNREVIEWED_MAX_WORDS:
+        return None
+    hit = finding(comment, "unreviewed", "short and unmatched -- read it yourself")
+    hit.code = comment.next_code.strip()
+    return hit
+
+
+ADVISORY_RULES = {
+    "dead-code": advise_dead_code,
+    "untracked-todo": advise_untracked_todo,
+    "banner": advise_banner,
+    "unreviewed": advise_unreviewed,
+}
+
+
+COMMENT_RULES = (
+    rule_restatement,
+    rule_flow,
+    rule_conditional,
+    rule_bare_identifier,
+    rule_history,
+    rule_process_leak,
+    rule_benchmark,
+    rule_reference,
+    rule_step_marker,
+    rule_narrative,
+)
+
+RUN_RULES = (rule_verbose,)
+
+
+def finding(comment: Comment, rule: str, why: str, end_line: int = 0) -> Finding:
+    """`ident` keys the session cache: the rule, the comment, and the code beside it."""
+    return Finding(
+        line=comment.line,
+        rule=rule,
+        text=headline(comment),
+        why=why,
+        end_line=end_line or comment.end_line,
+        ident=f"{rule}\x00{comment.prose.strip()}\x00{comment.next_code.strip()}",
+    )
+
+
+def headline(comment: Comment) -> str:
+    first = next((line for line in comment.raw.splitlines() if line.strip()), "")
+    first = first.strip()
+    return first if len(first) <= 72 else first[:69] + "..."
+
+
+def rule_redundant_doc(unit: Unit, ctx: Ctx) -> Finding | None:
+    doc = unit.doc
+    if doc is None or not unit.name:
+        return None
+    if PRESCRIBED.search(to_prose(doc.raw, Kind.BLOCK)):
+        return None
+    words = content_words(doc.prose)
+    if not words or len(words) > DOCSTRING_MAX_WORDS:
+        return None
+    signature = code_tokens(unit.name + " " + " ".join(unit.params))
+    hits = [word for word in words if matches_token(word, signature) is not None]
+    if len(hits) / len(words) < RESTATE_COVERAGE:
+        return None
+    return finding(doc, "redundant-docstring",
+                   f"restates the signature of `{unit.name}` (shares "
+                   + ", ".join(hits[:4]) + ")")
+
+
+def rule_budget(unit: Unit, ctx: Ctx) -> list[tuple[Comment, Finding]]:
+    if ctx.lang.syntax is Syntax.SHELL:
+        return []
+    quota = 0 if unit.body_lines < SMALL_FN_LINES else 1
+    spending: list[Comment] = []
+    for comment in sorted(unit.comments, key=lambda item: item.line):
+        if comment.trailing or comment.header:
+            continue
+        if is_allowed(comment.prose, comment.raw) or code_shaped(comment, ctx):
+            continue
+        if JUSTIFY_RE.search(comment.prose) or CONSTRAINT_RE.search(comment.prose):
+            continue
+        if spending and spending[-1].run == comment.run:
+            continue
+        spending.append(comment)
+    if len(spending) <= quota:
+        return []
+    named = f"`{unit.name}`" if unit.name else "this function"
+    label = (
+        f"{named} is under {SMALL_FN_LINES} code lines and gets no comment"
+        if quota == 0
+        else f"{named} already spent its one comment"
+    )
+    return [
+        (comment, finding(comment, "budget", f"{label} ({len(spending)} in the function)"))
+        for comment in spending[quota:]
+    ]
+
+
+def rule_density(ctx: Ctx, scope: set[int] | None) -> list[Finding]:
+    if ctx.lang.syntax is not Syntax.SHELL:
+        return []
+    comment_lines: set[int] = set()
+    for comment in ctx.parsed.comments:
+        if comment.trailing or comment.header:
+            continue
+        if is_allowed(comment.prose, comment.raw):
+            continue
+        comment_lines.update(range(comment.line, comment.end_line + 1))
+    region = scope if scope is not None else None
+    lines = ctx.parsed.source.splitlines()
+    numbers = [
+        number
+        for number in range(1, len(lines) + 1)
+        if lines[number - 1].strip() and (region is None or number in region)
+    ]
+    if len(numbers) < DENSITY_MIN_REGION:
+        return []
+    commented = [number for number in numbers if number in comment_lines]
+    ratio = len(commented) / len(numbers)
+    if ratio <= SHELL_DENSITY_CEILING:
+        return []
+    return [
+        Finding(
+            ident=f"density\x00{ctx.path}",
+            line=commented[0],
+            rule="density",
+            end_line=commented[-1],
+            text=f"{len(commented)} of {len(numbers)} lines in the region are comment",
+            why=f"the region is {ratio:.0%} comment"
+                f" (ceiling {SHELL_DENSITY_CEILING:.0%})",
+        )
+    ]
+
+
+def in_scope(comment: Comment, scope: set[int] | None) -> bool:
+    if scope is None:
+        return True
+    return any(number in scope for number in range(comment.line, comment.end_line + 1))
+
+
+def select(rules: list[str] | None, disabled: list[str] | None) -> frozenset[str]:
+    known = set(RULE_ORDER)
+    unknown = (set(rules or []) | set(disabled or [])) - known
+    if unknown:
+        sys.stderr.write(
+            f"comment-deslop: unknown rule id(s): {', '.join(sorted(unknown))}\n"
+        )
+    active = known if rules is None else set(rules) & known
+    return frozenset(active - set(disabled or []))
+
+
+@dataclass
+class Result:
+    findings: list[Finding] = field(default_factory=list)
+    advisories: list[Finding] = field(default_factory=list)
+
+    def __bool__(self) -> bool:
+        return bool(self.findings or self.advisories)
+
+
+def analyze(path: str, opts) -> Result:
+    lang = lang_for(path)
+    if lang is None:
+        return Result()
+    try:
+        source = Path(path).read_text(encoding="utf8", errors="replace")
+    except OSError:
+        return Result()
+    parsed = parse_file(path, source, lang)
+    base = os.path.dirname(os.path.abspath(path)) or "."
+    ctx = Ctx(path=path, base=base, lang=lang, parsed=parsed)
+    scope = None if opts.all else changed_lines(path, opts.since)
+    active = select(opts.rules, opts.no_rules)
+    found: list[Finding] = []
+    for comment in parsed.comments:
+        if not in_scope(comment, scope) or is_allowed(comment.prose, comment.raw):
+            continue
+        if code_shaped(comment, ctx):
+            continue
+        for rule in COMMENT_RULES:
+            hit = rule(comment, ctx)
+            if hit is None:
+                continue
+            if hit.rule in TRAILING_EXEMPT and comment.trailing:
+                continue
+            if hit.rule in HEADER_EXEMPT and comment.header:
+                continue
+            found.append(hit)
+    for run in parsed.runs:
+        if not any(in_scope(comment, scope) for comment in run):
+            continue
+        for run_rule in RUN_RULES:
+            hit = run_rule(run, ctx)
+            if hit is not None:
+                found.append(hit)
+    for unit in parsed.units:
+        doc_hit = rule_redundant_doc(unit, ctx)
+        if doc_hit is not None and in_scope(unit.doc, scope):
+            found.append(doc_hit)
+        for comment, hit in rule_budget(unit, ctx):
+            if in_scope(comment, scope):
+                found.append(hit)
+    found.extend(rule_density(ctx, scope))
+    found = dedupe([hit for hit in found if hit.rule in active])
+    return Result(findings=found, advisories=advise(ctx, scope, found, opts))
+
+
+def advise(ctx: Ctx, scope: set[int] | None, found: list[Finding], opts) -> list[Finding]:
+    names = select_advisory(getattr(opts, "advisory", None), getattr(opts, "no_advisory", False))
+    if not names:
+        return []
+    claimed = {hit.line for hit in found}
+    out: list[Finding] = []
+    for comment in ctx.parsed.comments:
+        if not in_scope(comment, scope) or NEVER_HARD_RE.search(comment.raw):
+            continue
+        if comment.line in claimed:
+            continue
+        for name in ADVISORY_ORDER:
+            if name not in names:
+                continue
+            hit = ADVISORY_RULES[name](comment, ctx)
+            if hit is None:
+                continue
+            out.append(hit)
+            claimed.add(comment.line)
+            break
+    return out
+
+
+def select_advisory(requested: list[str] | None, disabled: bool) -> frozenset[str]:
+    if disabled:
+        return frozenset()
+    if requested is None:
+        return frozenset(ADVISORY_DEFAULT)
+    known = set(ADVISORY_ORDER)
+    if "all" in requested:
+        return frozenset(known)
+    unknown = set(requested) - known
+    if unknown:
+        sys.stderr.write(
+            f"comment-deslop: unknown advisory id(s): {', '.join(sorted(unknown))}\n"
+        )
+    return frozenset(set(requested) & known)
+
+
+def dedupe(found: list[Finding]) -> list[Finding]:
+    """One finding per line: the strongest rule wins, the rest are named on it."""
+    rank = {rule: index for index, rule in enumerate(RULE_ORDER)}
+    best: dict[int, Finding] = {}
+    others: dict[int, set[str]] = {}
+    for hit in found:
+        others.setdefault(hit.line, set()).add(hit.rule)
+        current = best.get(hit.line)
+        if current is None or rank[hit.rule] < rank[current.rule]:
+            best[hit.line] = hit
+    for line, hit in best.items():
+        hit.extra = tuple(sorted(others[line] - {hit.rule}, key=lambda r: rank[r]))
+    return sorted(best.values(), key=lambda hit: (rank[hit.rule], hit.line))
+
+
+def tag_of(hit: Finding) -> str:
+    extra = "".join(f" +{rule}" for rule in hit.extra)
+    return f"[{hit.rule}{extra}]"
+
+
+ADVISORY_ACTION = """These rules are excluded from the checks on purpose
+(docs/excluded-rules.md) -- nothing has acted on them and nothing will. Decide for
+yourself: delete the comment, or promote the rule by moving it into RULE_ORDER."""
+
+ACTION = """Action: delete the flagged comments. Each one restates, narrates or
+decorates the code, and the checks already spare comments that carry a constraint,
+a spec reference or a reason.
+
+A better name or an extraction is the better fix where one exists. Where it does
+not, delete the comment anyway -- do not rewrite working code only to satisfy this
+check, and do not re-add a comment you deleted.
+
+If a flagged comment genuinely must stay, that is a gap in the allowlist, not an
+exception. Say so instead of keeping it quietly."""
+
+
+def advisory_report(results: dict[str, Result]) -> str:
+    """Grouped by rule: an advisory is one decision per rule, not per instance."""
+    rows = [
+        (path, hit)
+        for path, result in results.items()
+        for hit in result.advisories
+        if hit.rule not in ADVISORY_HIDDEN
+    ]
+    if not rows:
+        return ""
+    groups: dict[str, list[tuple[str, Finding]]] = {}
+    for path, hit in rows:
+        groups.setdefault(hit.rule, []).append((path, hit))
+    confidence = {rule: index for index, rule in enumerate(ADVISORY_ORDER)}
+    order = sorted(groups, key=lambda rule: (len(groups[rule]), confidence[rule]))
+    lines = [
+        f"comment-deslop advisory: {len(rows)} note(s) across {len(groups)} rule(s)"
+    ]
+    for rule in order:
+        members = groups[rule]
+        lines.append(f"  {rule:<16}{len(members):>6}  {ADVISORY_BLURB[rule]}")
+        for path, hit in members[:ADVISORY_EXAMPLES]:
+            lines.append(f"      {path}:{hit.line}  {hit.text}")
+    lines.append("")
+    lines.append(ADVISORY_ACTION)
+    return "\n".join(lines)
+
+
+def report(path: str, found: list[Finding]) -> str:
+    width = max(len(tag_of(hit)) for hit in found) + 1
+    anchor = max(len(hit.span) for hit in found) + 1
+    plural = "" if len(found) == 1 else "s"
+    lines = [f"comment-deslop: {path} ({len(found)} finding{plural})"]
+    for hit in found:
+        tag = tag_of(hit).ljust(width)
+        lines.append(f"  {hit.span.ljust(anchor)} {tag} {hit.text}")
+        lines.append(f"  {' ' * anchor} {' ' * width} -> {hit.why}")
+    return "\n".join(lines)
+
+
+SKIP_DIRS = frozenset(
+    {".git", "node_modules", "target", "dist", "build", "__pycache__",
+     ".venv", "venv", ".mypy_cache", ".ruff_cache", ".pytest_cache", ".tox",
+     ".next", "vendor", "third_party", "external", "site-packages", "htmlcov",
+     ".eggs"}
+)
+
+
+def nested_repo(root: str, name: str) -> bool:
+    """A submodule or vendored checkout: someone else's comments, not ours."""
+    return os.path.exists(os.path.join(root, name, ".git"))
+
+
+def collect(paths: list[str], skipped: list[str] | None = None) -> list[str]:
+    files: list[str] = []
+    for path in paths:
+        if os.path.isfile(path):
+            files.append(path)
+            continue
+        if not os.path.isdir(path):
+            continue
+        for root, dirs, names in os.walk(path):
+            keep = []
+            for name in dirs:
+                if name in SKIP_DIRS:
+                    continue
+                if nested_repo(root, name):
+                    if skipped is not None:
+                        skipped.append(os.path.join(root, name))
+                    continue
+                keep.append(name)
+            dirs[:] = keep
+            for name in names:
+                candidate = os.path.join(root, name)
+                if lang_for(candidate) is not None:
+                    files.append(candidate)
+    return files
+
+
+@dataclass
+class HookInput:
+    event: str = ""
+    session: str = ""
+    paths: list[str] = field(default_factory=list)
+
+
+def read_hook() -> HookInput | None:
+    try:
+        payload = json.load(sys.stdin)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    event = payload.get("hook_event_name", "")
+    session = str(payload.get("session_id", ""))
+    if event == "SessionEnd":
+        return HookInput(event=event, session=session)
+    if event == "Stop":
+        return HookInput(event=event, session=session, paths=changed_files(payload))
+    target = tool_path(payload)
+    if target is None:
+        return None
+    return HookInput(event=event or "PostToolUse", session=session, paths=[target])
+
+
+def tool_path(payload: dict) -> str | None:
+    if payload.get("tool_name") not in ("Write", "Edit", "MultiEdit"):
+        return None
+    for source in (payload.get("tool_input"), payload.get("tool_response")):
+        if not isinstance(source, dict):
+            continue
+        for key in ("file_path", "filePath", "path"):
+            value = source.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
+def changed_files(payload: dict) -> list[str]:
+    """Stop carries no tool payload, so ask git what this session has touched."""
+    base = payload.get("cwd") or os.getcwd()
+    names = git(["diff", "--name-only", "HEAD"], base) or ""
+    fresh = git(["ls-files", "--others", "--exclude-standard"], base) or ""
+    root = git(["rev-parse", "--show-toplevel"], base)
+    anchor = root.strip() if root else base
+    out = []
+    for name in (names + fresh).splitlines():
+        if not name.strip():
+            continue
+        path = os.path.join(anchor, name.strip())
+        if os.path.isfile(path) and lang_for(path) is not None:
+            out.append(path)
+    return out
+
+
+def as_candidates(results: dict[str, Result]) -> str:
+    """The triage set for the agent to judge. The engine never calls a model.
+
+    Only `unreviewed` rows: every other advisory already states what is wrong,
+    and a finding on the line removes it from the set altogether.
+    """
+    rows = [
+        {"file": path, "line": hit.line, "comment": hit.text, "code": hit.code}
+        for path, result in results.items()
+        for hit in result.advisories
+        if hit.rule == "unreviewed"
+    ]
+    return json.dumps({"candidates": rows}, indent=2)
+
+
+def as_json(results: dict[str, Result], skipped: list[str]) -> str:
+    def rows(attr):
+        return [
+            {"file": path, "line": hit.line, "end_line": hit.end_line,
+             "rule": hit.rule, "comment": hit.text, "why": hit.why}
+            for path, result in results.items()
+            for hit in getattr(result, attr)
+            if attr == "findings" or hit.rule not in ADVISORY_HIDDEN
+        ]
+
+    return json.dumps(
+        {
+            "findings": rows("findings"),
+            "advisories": rows("advisories"),
+            "skipped_repos": skipped,
+        },
+        indent=2,
+    )
+
+
+FLOORS = {
+    "restatement": 0.85,
+    "history": 0.85,
+    "flow-narration": 0.80,
+    "dead-code (advisory)": 0.80,
+    "untracked-todo (advisory)": 0.80,
+}
+
+
+def score(counts, failures, case, key: str, got: set[str]) -> None:
+    want = case.get(key)
+    label = "" if key == "expect" else " (advisory)"
+    if want is None:
+        for rule in sorted(got):
+            counts.setdefault(rule + label, {"tp": 0, "fp": 0, "fn": 0})["fp"] += 1
+            failures.append(f"  {case['id']}: unexpected [{rule}]{label}")
+        return
+    bucket = counts.setdefault(want + label, {"tp": 0, "fp": 0, "fn": 0})
+    if want in got:
+        bucket["tp"] += 1
+        return
+    bucket["fn"] += 1
+    failures.append(f"  {case['id']}: missed [{want}]{label}, got {', '.join(sorted(got)) or 'nothing'}")
+
+
+def run_eval() -> int:
+    import tempfile
+
+    corpus_path = Path(__file__).resolve().parent.parent / "eval" / "corpus.json"
+    cases = json.loads(corpus_path.read_text(encoding="utf8"))
+    has_ast = get_parser(LANGS[".py"]) is not None
+    skipped = 0
+    counts: dict[str, dict[str, int]] = {}
+    failures: list[str] = []
+
+    class EvalOpts:
+        all = True
+        since = "HEAD"
+        rules = None
+        no_rules = None
+        advisory: list[str] | None = None
+        no_advisory = False
+        llm = False
+
+    for case in cases:
+        if case.get("ast") and not has_ast:
+            skipped += 1
+            continue
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "case" + case["ext"])
+            Path(path).write_text(case["code"], encoding="utf8")
+            result = analyze(path, EvalOpts())
+            found = {hit.rule for hit in result.findings}
+            noted = {hit.rule for hit in result.advisories}
+        score(counts, failures, case, "expect", found)
+        score(counts, failures, case, "advisory", noted)
+    print(f"{'rule':<24} {'tp':>4} {'fp':>4} {'fn':>4} {'prec':>6} {'rec':>6}")
+    breached = []
+    for rule in sorted(counts):
+        bucket = counts[rule]
+        precision = ratio(bucket["tp"], bucket["tp"] + bucket["fp"])
+        recall = ratio(bucket["tp"], bucket["tp"] + bucket["fn"])
+        print(f"{rule:<24} {bucket['tp']:>4} {bucket['fp']:>4} {bucket['fn']:>4}"
+              f" {precision:>6.2f} {recall:>6.2f}")
+        floor = FLOORS.get(rule)
+        if floor is not None and min(precision, recall) < floor:
+            breached.append(f"  {rule}: floor {floor:.2f}, got"
+                            f" p={precision:.2f} r={recall:.2f}")
+    if skipped:
+        print(f"\n{skipped} AST-only case(s) skipped: no tree-sitter parser available")
+    if failures:
+        print("\nmismatches:")
+        print("\n".join(failures))
+    if breached:
+        print("\nper-kind floor breached:")
+        print("\n".join(breached))
+        return 1
+    return 0 if not failures else 1
+
+
+def ratio(numerator: int, denominator: int) -> float:
+    if denominator == 0:
+        return 1.0
+    return numerator / denominator
+
+
+def split_list(value: str | None) -> list[str] | None:
+    if value is None:
+        return None
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("paths", nargs="*")
+    parser.add_argument("--hook", action="store_true")
+    parser.add_argument("--since", default="HEAD")
+    parser.add_argument("--all", action="store_true")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--rules")
+    parser.add_argument("--no-rules", dest="no_rules")
+    parser.add_argument("--advisory")
+    parser.add_argument("--no-advisory", action="store_true")
+    parser.add_argument("--llm", action="store_true")
+    parser.add_argument("--list-rules", action="store_true")
+    parser.add_argument("-h", "--help", action="store_true")
+    return parser
+
+
+def run_doctor(install: bool) -> int:
+    if install:
+        return install_parser()
+    parser = get_parser(LANGS[".py"])
+    print(f"engine        {Path(__file__).resolve()}")
+    print(f"python        {sys.version.split()[0]} ({sys.executable})")
+    print(f"tree-sitter   {'available' if parser is not None else 'MISSING'}")
+    found = venv_python()
+    print(f"venv          {found} ({'present' if found.exists() else 'absent'})")
+    if parser is None:
+        print("              AST rules off: budget, redundant-docstring;"
+              " flow-narration falls back to the next code line")
+        print("              to enable them: comment-deslop doctor --install")
+    print(f"git           {'available' if git(['--version'], '.') else 'MISSING'}")
+    if not git(["--version"], "."):
+        print("              change scoping off: every comment is in scope")
+    print(f"rules         {len(RULE_ORDER)} ({', '.join(RULE_ORDER)})")
+    print(f"advisory      {len(ADVISORY_ORDER)} ({', '.join(ADVISORY_ORDER)});"
+          f" default {', '.join(ADVISORY_DEFAULT)}")
+    return 0
+
+
+NO_PARSER_EXIT = 3
+CACHE_TTL_DAYS = 7
+STOP_EXCLUDED = frozenset({"budget", "density"})
+
+
+def sessions_dir() -> Path:
+    cache = os.environ.get("XDG_CACHE_HOME") or os.path.join(
+        os.path.expanduser("~"), ".cache"
+    )
+    return Path(cache) / "comment-deslop" / "sessions"
+
+
+def session_file(session: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", session)[:64]
+    return sessions_dir() / f"{safe}.jsonl"
+
+
+def sweep_sessions() -> None:
+    cutoff = time.time() - CACHE_TTL_DAYS * 86400
+    directory = sessions_dir()
+    if not directory.is_dir():
+        return
+    for path in directory.glob("*.jsonl"):
+        with contextlib.suppress(OSError):
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+
+
+def load_session(session: str) -> set[str]:
+    sweep_sessions()
+    path = session_file(session)
+    if not path.is_file():
+        return set()
+    keys = set()
+    with contextlib.suppress(OSError):
+        for line in path.read_text(encoding="utf8").splitlines():
+            if line.strip():
+                keys.add(line.strip())
+    return keys
+
+
+def append_session(session: str, keys: list[str]) -> None:
+    if not keys:
+        return
+    path = session_file(session)
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf8") as handle:
+            handle.write("".join(f"{key}\n" for key in keys))
+
+
+def forget_session(session: str) -> None:
+    with contextlib.suppress(OSError):
+        session_file(session).unlink()
+
+
+def cache_key(path: str, hit: Finding) -> str:
+    raw = f"{os.path.abspath(path)}\x00{hit.ident}"
+    return hashlib.sha256(raw.encode("utf8")).hexdigest()[:20]
+
+
+def main(argv: list[str]) -> int:
+    require_ast = os.environ.get("COMMENT_DESLOP_REQUIRE_AST") == "1"
+    if require_ast and get_parser(LANGS[".py"]) is None:
+        return NO_PARSER_EXIT
+    if argv[:1] == ["eval"]:
+        return run_eval()
+    if argv[:1] == ["doctor"]:
+        return run_doctor("--install" in argv[1:])
+    opts = build_parser().parse_args(argv)
+    if opts.help:
+        print(__doc__)
+        return 0
+    if opts.list_rules:
+        print("\n".join(RULE_ORDER))
+        print("\n".join(f"{name} (advisory)" for name in ADVISORY_ORDER))
+        return 0
+    opts.rules = split_list(opts.rules)
+    opts.no_rules = split_list(opts.no_rules)
+    opts.advisory = split_list(opts.advisory)
+    if opts.llm:
+        opts.advisory = list(ADVISORY_ORDER)
+        opts.no_advisory = False
+    paths = list(opts.paths)
+    session, event = "", ""
+    if opts.hook:
+        incoming = read_hook()
+        if incoming is None:
+            return 0
+        session, event = incoming.session, incoming.event
+        if event == "SessionEnd":
+            forget_session(session)
+            return 0
+        if not incoming.paths:
+            return 0
+        paths = incoming.paths
+    if not paths:
+        print(__doc__)
+        return 0
+    results: dict[str, Result] = {}
+    skipped: list[str] = []
+    for path in collect(paths, skipped):
+        result = analyze(path, opts)
+        if result:
+            results[path] = result
+    if opts.llm:
+        print(as_candidates(results))
+        return 0
+    if event == "Stop":
+        for result in results.values():
+            result.findings = [
+                hit for hit in result.findings if hit.rule not in STOP_EXCLUDED
+            ]
+            for hit in result.findings:
+                hit.extra = tuple(r for r in hit.extra if r not in STOP_EXCLUDED)
+    suppressed = 0
+    if session and event in ("Stop", "PostToolUse"):
+        suppressed = apply_cache(results, session)
+    findings = {path: r.findings for path, r in results.items() if r.findings}
+    advisory = advisory_report(results)
+    if opts.json:
+        print(as_json(results, skipped))
+        return 2 if findings else 0
+    if opts.hook:
+        return emit_hook(findings, advisory, suppressed)
+    if skipped:
+        listed = ", ".join(sorted(skipped)[:4])
+        more = "" if len(skipped) <= 4 else f" (+{len(skipped) - 4} more)"
+        sys.stdout.write(
+            f"comment-deslop: skipped {len(skipped)} nested repo(s): {listed}{more}\n"
+            "               point at one directly to scan it\n"
+        )
+    if not findings and not advisory:
+        print("comment-deslop: no comment slop on the changed lines")
+        return 0
+    if findings:
+        sys.stdout.write(full_report(findings, suppressed))
+    if advisory:
+        sys.stdout.write("\n" + advisory + "\n")
+    return 2 if findings else 0
+
+
+def apply_cache(results: dict[str, Result], session: str) -> int:
+    """Report a finding once per session, keyed on the comment and the code beside it."""
+    seen = load_session(session)
+    fresh: list[str] = []
+    suppressed = 0
+    for path, result in results.items():
+        kept = []
+        for hit in result.findings:
+            key = cache_key(path, hit)
+            if key in seen:
+                suppressed += 1
+                continue
+            kept.append(hit)
+            fresh.append(key)
+        result.findings = kept
+    append_session(session, fresh)
+    return suppressed
+
+
+def full_report(findings: dict[str, list[Finding]], suppressed: int) -> str:
+    body = "\n\n".join(report(path, found) for path, found in findings.items())
+    if suppressed:
+        body += f"\n\n{suppressed} unchanged finding(s) already reported, not repeated."
+    return f"{body}\n\n{ACTION}\n"
+
+
+def emit_hook(
+    findings: dict[str, list[Finding]], advisory: str, suppressed: int
+) -> int:
+    """Findings go to stderr (the model reads them); advisories only to the user."""
+    notes = [advisory] if advisory else []
+    if suppressed and not findings:
+        notes.append(
+            f"comment-deslop: {suppressed} finding(s) unchanged since the last"
+            " check, not repeated."
+        )
+    if notes:
+        print(json.dumps({"systemMessage": "\n\n".join(notes)}))
+    if not findings:
+        return 0
+    sys.stderr.write(full_report(findings, suppressed))
+    return 2
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except SystemExit:
+        raise
+    except Exception as error:  # noqa: BLE001 -- the hook must never break the edit loop
+        sys.stdout.write(f"comment-deslop: skipped ({type(error).__name__}: {error})\n")
+        raise SystemExit(0)

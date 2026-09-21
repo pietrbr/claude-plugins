@@ -38,6 +38,11 @@
       "name": "session-summary",
       "source": "./plugins/session-summary",
       "description": "Reorient inside a long or wandering session: /summary prints a short, schematic summary of the current conversation -- status, original problem, decisions & drift, open items, and the next step. Chat-only."
+    },
+    {
+      "name": "comment-deslop",
+      "source": "./plugins/comment-deslop",
+      "description": "De-slop the comments an agent just wrote. A PostToolUse hook intersects tree-sitter comment nodes with the git-changed lines and reports 14 slop rules (restatement, flow narration, history/decision recording, process leaks, benchmarks, stale references, verbosity, per-function comment budget, redundant docstrings); /deslop then fixes them. Offline, no model call, never edits a file itself; calibrated against a 54-case labeled corpus with per-rule floors."
     }
   ]
 }
