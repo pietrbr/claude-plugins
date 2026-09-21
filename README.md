@@ -23,6 +23,8 @@ Then install any plugin from it:
 | [guided-learning](./plugins/guided-learning)                         | A hands-on teaching posture for learning any procedural system by operating it yourself, with Claude as lab instructor -- scopes each step, runs read-only checks alongside you, and explains the output.                  |
 | [format](./plugins/format)                                           | Format files with a conform.nvim/mason-style toolchain (isort/ruff/prettier/shfmt/stylua/taplo/latexindent/...). Defaults to git-changed files; respects repo-local formatter config.                                      |
 | [conventional-commit-message](./plugins/conventional-commit-message) | Draft a Conventional Commits message from the conversation's changed files and current git state; infers type/scope from repo history and never commits or pushes.                                                         |
+| [coordination-ledger](./plugins/coordination-ledger)                 | Cross-repo coordination ledger -- a local, never-pushed issue tracker for repos under a common parent (e.g. a paper and its codebase). A Python program owns the JSON index; per-operation commands (init, register, open, reply, check) are thin wrappers over it.                    |
+| [session-summary](./plugins/session-summary)                         | Reorient inside a long or wandering session: `/summary` prints a schematic summary of the current conversation -- status, original problem, decisions and drift, open items, and the next step. Chat only.                    |
 
 ## License
 
