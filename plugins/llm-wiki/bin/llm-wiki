@@ -31,10 +31,16 @@ Subcommands:
                                 append a log entry, commit only that topic, refresh qmd
   compile-scan <cwd> [<source>...]
                                 list uncompiled (or named) sources with their sidecar frontmatter
-  backlinks <cwd> <page>...     list pages that mention a page's title without linking it
+  backlinks <cwd> <page>... [--topic NAME]
+                                list pages that mention a page's title without linking it
   mark-compiled <cwd> <file>... set compiled: true in each source's sidecar
-  lint-scan <cwd>               report dead links, orphans, index drift, missing template headers
+  lint-scan <cwd> [--topic NAME]
+                                report dead links, orphans, index drift, missing template headers
   merge-scan <from> <into>      classify <from>'s raw sources and pages against <into>
+  merge-move <from> <into> [--same F]... [--distinct F]...
+                                apply the raw and page moves that need no judgment
+  merge-finish <from> <into> [--rename OLD=NEW]... [--summary TEXT]
+                                rewrite links, move log and reports, delete <from>, rebind, commit
   topic-list                    print every binding
 """
 import argparse
@@ -273,10 +279,10 @@ def merge_scan(src: Path, dst: Path) -> dict:
     dst_names = {f.name for f in _files(dst / "raw" / "documents")}
     raw = _classify_raw(_raw_sources(src), _raw_sources(dst), dst_names)
 
-    stems_b = {Path(p).stem: p for p in _wiki_pages(dst)}
+    stems_b = {_page_name(p): p for p in _wiki_pages(dst)}
     pages_new, pages_colliding = [], []
     for page in sorted(_wiki_pages(src)):
-        stem = Path(page).stem
+        stem = _page_name(page)
         if stem in stems_b:
             pages_colliding.append({"from": page, "into": stems_b[stem]})
         else:
@@ -810,12 +816,18 @@ def cmd_compile_scan(argv: list) -> str:
     return compile_scan(topic_dir, a.sources)
 
 
+def _topic_or_cwd(a) -> Path:
+    if a.topic:
+        return _require_topic(_vault_root(), a.topic)
+    return _cwd_topic(a.cwd)[1]
+
+
 def cmd_backlinks(argv: list) -> str:
     ap = _one_parser("backlinks", "cwd")
     ap.add_argument("pages", nargs="+")
+    ap.add_argument("--topic", default="")
     a = ap.parse_args(argv)
-    _, topic_dir = _cwd_topic(a.cwd)
-    return backlinks(topic_dir, a.pages)
+    return backlinks(_topic_or_cwd(a), a.pages)
 
 
 def cmd_mark_compiled(argv: list) -> str:
@@ -894,8 +906,271 @@ def lint_scan(topic_dir: Path) -> str:
 
 
 def cmd_lint_scan(argv: list) -> str:
-    _, topic_dir = _cwd_topic(_one_parser("lint-scan", "cwd").parse_args(argv).cwd)
-    return lint_scan(topic_dir)
+    ap = _one_parser("lint-scan", "cwd")
+    ap.add_argument("--topic", default="")
+    return lint_scan(_topic_or_cwd(ap.parse_args(argv)))
+
+
+MERGE_STATE = "merge-state.json"
+MERGE_KEEP = {"log.md", "CLAUDE.md", "qmd.yml", ".gitignore", MERGE_STATE, "wiki/index.md"}
+
+
+def _set_field(sidecar: Path, key: str, value: str) -> None:
+    text = sidecar.read_text()
+    m = FRONTMATTER.match(text)
+    if not m:
+        raise CliError(f"{sidecar} has no frontmatter")
+    line = f"{key}: {value}"
+    front, n = re.subn(rf"^{re.escape(key)}:.*$", lambda _: line, m.group(1), count=1, flags=re.M)
+    if not n:
+        front += line + "\n"
+    sidecar.write_text(f"---\n{front}---\n" + text[m.end():])
+
+
+def _raw_field(sidecar: Path, key: str) -> str:
+    if not sidecar.is_file():
+        return ""
+    m = re.search(rf"^{re.escape(key)}:[ \t]*(.*?)\s*$", _frontmatter(sidecar.read_text(errors="ignore")), re.M)
+    return m.group(1) if m else ""
+
+
+def _clean_tree(root: Path, names: list) -> None:
+    status = _git(root, "status", "--porcelain", "-uall", "--", *names)
+    if status.returncode != 0:
+        raise CliError("git status failed: " + status.stderr.strip())
+    if status.stdout.strip():
+        raise CliError("commit or discard these changes first:\n" + status.stdout.rstrip())
+
+
+def _move(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        raise CliError(f"refusing to overwrite {dst}")
+    shutil.move(str(src), str(dst))
+
+
+WIKILINK_SPAN = re.compile(r"(!?)\[\[([^\]|#]+?)(\s*\\?)((?:#[^\]|]*)?(?:\\?\|[^\]]*)?\]\])")
+MD_LINK_TARGET = re.compile(r"(\]\((?:[^)\s]*/)?)([^/)\s]+)(\))")
+
+
+def _rewrite_prose(text: str, fn) -> str:
+    out, pos = [], 0
+    for m in NON_PROSE.finditer(text):
+        out += [fn(text[pos:m.start()]), m.group(0)]
+        pos = m.end()
+    return "".join(out + [fn(text[pos:])])
+
+
+def _rewrite_links(page: Path, renames: dict) -> None:
+    """Rewrite wikilinks, and markdown link file names, whose target is a key of `renames`."""
+    if not renames:
+        return
+    def wiki(m):
+        new = renames.get(_page_name(m.group(2).strip()))
+        return m.group(0) if new is None else f"{m.group(1)}[[{new}{m.group(3)}{m.group(4)}"
+    def md(m):
+        new = renames.get(m.group(2).lower())
+        return m.group(0) if new is None or "." not in new else f"{m.group(1)}{new}{m.group(3)}"
+    text = page.read_text()
+    page.write_text(_rewrite_prose(text, lambda t: MD_LINK_TARGET.sub(md, WIKILINK_SPAN.sub(wiki, t))))
+
+
+def merge_move(root: Path, src: Path, dst: Path, same: set, distinct: set) -> dict:
+    _clean_tree(root, [src.name, dst.name])
+    scan = merge_scan(src, dst)
+    possible = {r["file"] for r in scan["raw"] if r["status"] == "possible-duplicate"}
+    wrong = sorted((same | distinct) - possible)
+    if wrong:
+        raise CliError("--same and --distinct take only possible duplicates; not one: " + ", ".join(wrong))
+    if same & distinct:
+        raise CliError("both --same and --distinct given for: " + ", ".join(sorted(same & distinct)))
+    undecided = sorted(possible - same - distinct)
+    if undecided:
+        raise CliError("decide each possible duplicate with --same or --distinct: " + ", ".join(undecided))
+    sdocs, ddocs = src / "raw" / "documents", dst / "raw" / "documents"
+    src_summaries, dst_summaries = _summary_pages(src), _summary_pages(dst)
+    dst_names = {_page_name(p) for p in _wiki_pages(dst)}
+    colliding = {p["from"]: p["into"] for p in scan["pages_colliding"]}
+    state = {"from": src.name, "into": dst.name, "sources_moved": [], "sources_deduplicated": [],
+             "renamed": {}, "attachments_renamed": {}, "pages_moved": [], "to_reconcile": [],
+             "link_renames": {}, "local_renames": {}}
+
+    def retarget_summaries(old: str, new: str) -> None:
+        for rel in src_summaries.get(old, []):
+            _set_field(src / "wiki" / rel, "source-file", new)
+
+    for row in scan["raw"]:
+        name, sidecar = row["file"], sdocs / f"{Path(row['file']).stem}.meta.md"
+        if row["status"] == "duplicate" or name in same:
+            match = row["match"]
+            dside = ddocs / f"{Path(match).stem}.meta.md"
+            if dside.is_file():
+                for key in ("source-uri", "title"):
+                    if not _unquote(_raw_field(dside, key)) and _raw_field(sidecar, key):
+                        _set_field(dside, key, _raw_field(sidecar, key))
+                if row["compiled"].lower() == "true":
+                    _set_field(dside, "compiled", "true")
+            retarget_summaries(name, match)
+            state["renamed"][name] = match
+            into = dst_summaries.get(match, [])
+            for rel in src_summaries.get(name, []):
+                if not into:
+                    continue
+                colliding.pop(rel, None)
+                state["to_reconcile"].append({"from": rel, "into": into[0], "kind": "same-source"})
+                old, new = _page_name(rel), Path(into[0]).stem
+                if old != new.lower():
+                    (state["local_renames"] if old in dst_names else state["link_renames"])[old] = new
+            (sdocs / name).unlink()
+            sidecar.unlink(missing_ok=True)
+            state["sources_deduplicated"].append({"file": name, "kept": match})
+            continue
+        target = name
+        if row["name_clash"]:
+            target = _free_stem(ddocs, Path(name).stem, Path(name).suffix) + Path(name).suffix
+            state["renamed"][name] = target
+        _move(sdocs / name, ddocs / target)
+        if sidecar.exists():
+            _move(sidecar, ddocs / f"{Path(target).stem}.meta.md")
+            _set_field(ddocs / f"{Path(target).stem}.meta.md", "source-file", target)
+        retarget_summaries(name, target)
+        state["sources_moved"].append(target)
+
+    sattach, dattach = src / "raw" / "attachments", dst / "raw" / "attachments"
+    for row in scan["attachments"]:
+        f = sattach / row["file"]
+        if row["status"] == "identical":
+            f.unlink()
+            continue
+        target = row["file"]
+        if row["status"] == "name-clash":
+            target = _free_stem(dattach, f.stem, f.suffix) + f.suffix
+            state["attachments_renamed"][row["file"]] = target
+        _move(f, dattach / target)
+
+    file_renames = {k.lower(): v for k, v in {**state["renamed"], **state["attachments_renamed"]}.items() if k != v}
+    reconciling = {r["from"] for r in state["to_reconcile"]} | set(colliding)
+    for rel, into in colliding.items():
+        state["to_reconcile"].append({"from": rel, "into": into, "kind": "same-name"})
+    for rel in scan["pages_new"]:
+        page = src / "wiki" / rel
+        _rewrite_links(page, {**file_renames, **state["local_renames"]})
+        if rel in reconciling:
+            continue
+        _move(page, dst / "wiki" / rel)
+        state["pages_moved"].append(rel)
+    for rel in reconciling - set(scan["pages_new"]):
+        _rewrite_links(src / "wiki" / rel, {**file_renames, **state["local_renames"]})
+    (src / MERGE_STATE).write_text(json.dumps(state, indent=2) + "\n")
+    return state
+
+
+def _log_entries(log: Path) -> str:
+    text = log.read_text() if log.exists() else ""
+    m = re.search(r"^## \[", text, re.M)
+    return text[m.start():].rstrip() + "\n" if m else ""
+
+
+def _leftover_files(src: Path) -> list:
+    out = []
+    for f in sorted(src.rglob("*")):
+        rel = f.relative_to(src).as_posix()
+        if f.is_file() and rel not in MERGE_KEEP and not _is_cache(rel):
+            out.append(rel)
+    return out
+
+
+def merge_finish(root: Path, src: Path, dst: Path, renames: dict, summary: str) -> str:
+    state_file = src / MERGE_STATE
+    if not state_file.is_file():
+        raise CliError(f"run llm-wiki merge-move {src.name} {dst.name} first")
+    state = json.loads(state_file.read_text())
+    left = [rel for rel in _leftover_files(src) if rel.startswith("wiki/") and rel.endswith(".md")]
+    if left:
+        raise CliError("reconcile or move these pages first: " + ", ".join(left))
+    homonyms = {_page_name(k): v for k, v in renames.items()}
+    renamed_pages = {_page_name(v) for v in renames.values()}
+    origin = set(state["pages_moved"])
+    for f in (dst / "wiki").rglob("*.md"):
+        rel = str(f.relative_to(dst / "wiki"))
+        _rewrite_links(f, state["link_renames"])
+        if rel in origin or _page_name(rel) in renamed_pages:
+            _rewrite_links(f, homonyms)
+    log = dst / "log.md"
+    log_before = log.read_text() if log.exists() else ""
+    moved = []
+    aside = root / f".merge-{src.name}-{os.getpid()}"
+    try:
+        for rel in _leftover_files(src):
+            target = dst / rel
+            if target.exists():
+                target = target.with_name(f"{src.name}-{target.name}")
+            _move(src / rel, target)
+            moved.append((src / rel, target))
+        entries = _log_entries(src / "log.md")
+        if entries:
+            log.write_text(log_before.rstrip("\n") + "\n\n" + entries)
+        counts = (f"{len(state['sources_moved'])} sources moved, {len(state['sources_deduplicated'])} deduplicated, "
+                  f"{len(state['pages_moved'])} pages moved, {len(state['to_reconcile'])} reconciled")
+        append_log(dst, "merge", f"{src.name} into {dst.name}", summary or counts)
+        src.rename(aside)
+        commit_paths(root, [src.name, dst.name], f"merge: {src.name} into {dst.name}")
+    except (CliError, OSError) as e:
+        if aside.exists():
+            aside.rename(src)
+        for back, target in reversed(moved):
+            back.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(target), str(back))
+        log.write_text(log_before)
+        raise CliError(f"merge-finish failed ({e}); the old topic and the log are restored and nothing "
+                       "was rebound. Fix the cause and run merge-finish again.")
+    shutil.rmtree(aside)
+    head = _git(root, "rev-parse", "--short", "HEAD").stdout.strip()
+    topics = _load(TOPICS_FILE)
+    rebound = sorted(d for d, t in topics.items() if t == src.name)
+    _save(TOPICS_FILE, {d: (dst.name if t == src.name else t) for d, t in topics.items()})
+    notes = [qmd_run(src.name, "collection", "remove", src.name), _qmd_index(dst)]
+    lines = [f"Merged {src.name} into {dst.name}: {counts}.", f"committed {head}",
+             f"Recover with: git -C {shlex.quote(str(root))} revert --no-edit {head}, "
+             f"then rebind the directories below to {src.name} with /llm-wiki:set-topic."]
+    lines += [f"  rebound: {d}" for d in rebound]
+    lines += [n for n in notes if n]
+    return "\n".join(lines)
+
+
+def _two_topics(name: str, argv: list, extra) -> tuple:
+    ap = argparse.ArgumentParser(prog=f"llm-wiki {name}")
+    ap.add_argument("from_topic")
+    ap.add_argument("into_topic")
+    extra(ap)
+    a = ap.parse_args(argv)
+    root = _vault_root()
+    src, dst = _require_topic(root, a.from_topic), _require_topic(root, a.into_topic)
+    if src == dst:
+        raise CliError("cannot merge a topic into itself")
+    return root, src, dst, a
+
+
+def cmd_merge_move(argv: list) -> str:
+    def extra(ap):
+        ap.add_argument("--same", action="append", default=[], metavar="FILE")
+        ap.add_argument("--distinct", action="append", default=[], metavar="FILE")
+    root, src, dst, a = _two_topics("merge-move", argv, extra)
+    return json.dumps(merge_move(root, src, dst, set(a.same), set(a.distinct)), indent=2)
+
+
+def cmd_merge_finish(argv: list) -> str:
+    def extra(ap):
+        ap.add_argument("--rename", action="append", default=[], metavar="OLD=NEW")
+        ap.add_argument("--summary", default="")
+    root, src, dst, a = _two_topics("merge-finish", argv, extra)
+    renames = {}
+    for pair in a.rename:
+        old, sep, new = pair.partition("=")
+        if not sep or not old or not new:
+            raise CliError(f"--rename needs OLD=NEW, got '{pair}'")
+        renames[old] = new
+    return merge_finish(root, src, dst, renames, a.summary)
 
 
 def doctor_report(cwd: str) -> str:
@@ -1035,6 +1310,8 @@ ACTIONS = {
     "mark-compiled": cmd_mark_compiled,
     "lint-scan": cmd_lint_scan,
     "merge-scan": cmd_merge_scan,
+    "merge-move": cmd_merge_move,
+    "merge-finish": cmd_merge_finish,
     "topic-list": cmd_topic_list,
 }
 
