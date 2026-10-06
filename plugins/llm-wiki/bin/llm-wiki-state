@@ -17,6 +17,7 @@ Subcommands:
   resolve                       (UserPromptSubmit hook; reads hook JSON on stdin)
   dep-check                     (SessionStart hook; reads hook JSON on stdin)
   context <cwd>                 print vault_path/topic/templates_path/etc. for a command
+  topics <cwd>                  list vault topics with counts and bound directories
   topic-set <cwd> <name>
   topic-get <cwd>
   topic-unset <cwd>
@@ -36,8 +37,9 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 TOPICS_FILE = CONFIG_DIR / "topics.json"
 
 # Commands that may run without a topic bound for the cwd (bootstrap).
-EXEMPT = {"init", "set-topic", "set-vault", "doctor"}
+EXEMPT = {"init", "set-topic", "set-vault", "doctor", "list"}
 PLUGIN_PREFIX = "llm-wiki:"
+HOOK_ANSWERED = {"list"}
 
 
 def plugin_root() -> Path:
@@ -51,9 +53,10 @@ def references_dir() -> Path:
 
 def _load(path: Path) -> dict:
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
     except Exception:
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _save(path: Path, data: dict) -> None:
@@ -94,6 +97,55 @@ def context_lines(cwd: str) -> str:
     )
 
 
+UNCOMPILED = re.compile(r"^compiled:[ \t]*[\"']?false[\"']?[ \t]*$", re.M | re.I)
+
+
+def _wiki_pages(topic_dir: Path) -> set:
+    w = topic_dir / "wiki"
+    return {str(f.relative_to(w)) for f in w.rglob("*.md") if f.name != "index.md"} if w.is_dir() else set()
+
+
+def _topic_stats(topic_dir: Path) -> str:
+    docs = topic_dir / "raw" / "documents"
+    sources = uncompiled = 0
+    files = [f for f in docs.iterdir() if f.is_file() and not f.name.startswith(".")] if docs.is_dir() else []
+    for f in files:
+        if not f.name.endswith(".meta.md"):
+            sources += 1
+            continue
+        try:
+            uncompiled += bool(UNCOMPILED.search(f.read_text(errors="ignore")))
+        except OSError:
+            pass
+    return f"{sources} sources ({uncompiled} uncompiled), {len(_wiki_pages(topic_dir))} pages"
+
+
+def topics_report(cwd: str) -> str:
+    vault = vault_path()
+    if not vault:
+        return "No vault set. Run /llm-wiki:set-vault <path>."
+    root = Path(vault)
+    if not root.is_dir():
+        return f"Vault path is not a directory: {vault}. Fix it with /llm-wiki:set-vault <path>."
+    names = sorted(d.name for d in root.iterdir() if (d / "wiki").is_dir())
+    topics = _load(TOPICS_FILE)
+    bindings: dict = {}
+    for d, t in sorted(topics.items()):
+        bindings.setdefault(t, []).append(d)
+    current = topics.get(os.path.abspath(cwd), "")
+    lines = [f"vault: {vault}"]
+    if not names:
+        lines.append("  (no topics; run /llm-wiki:init <topic>)")
+    for name in names:
+        mark = "*" if name == current else " "
+        lines.append(f"{mark} {name} -- {_topic_stats(root / name)}")
+        lines.extend(f"    bound: {d}" for d in bindings.get(name, []))
+    for name in sorted(set(bindings) - set(names)):
+        lines.append(f"! {name} -- missing from vault")
+        lines.extend(f"    bound: {d}" for d in bindings[name])
+    return "\n".join(lines)
+
+
 # ---- subcommands ----------------------------------------------------------
 
 def cmd_resolve() -> int:
@@ -103,6 +155,10 @@ def cmd_resolve() -> int:
     command = detect_command(prompt)
     if not command:
         return 0  # not a wiki command -> no-op, stay silent
+
+    if command in HOOK_ANSWERED and prompt.lstrip().startswith("/" + PLUGIN_PREFIX + command):
+        print(json.dumps({"decision": "block", "reason": topics_report(cwd)}))
+        return 0
 
     topic = topic_for(cwd)
     if command not in EXEMPT and not topic:
@@ -151,6 +207,11 @@ def cmd_dep_check() -> int:
             "systemMessage": msg,
         }
     }))
+    return 0
+
+
+def cmd_topics(cwd: str) -> int:
+    print(topics_report(cwd))
     return 0
 
 
@@ -233,6 +294,8 @@ def main(argv) -> int:
             return cmd_dep_check()
         if op == "context":
             return cmd_context(rest[0])
+        if op == "topics":
+            return cmd_topics(rest[0])
         if op == "config-dir":
             print(CONFIG_DIR)
             return 0

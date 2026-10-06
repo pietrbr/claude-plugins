@@ -25,6 +25,7 @@ Do NOT perform operations from here -- invoke the matching command.
 | Set where wikis live (once per machine) | `/llm-wiki:set-vault <path>`                |
 | Create a new topic                      | `/llm-wiki:init <topic>`                    |
 | Bind the current directory to a topic   | `/llm-wiki:set-topic <topic>`               |
+| List topics and bound directories       | `/llm-wiki:list`                            |
 | Save a source (verbatim, no pages yet)  | `/llm-wiki:ingest <path\|url> [--type <t>]` |
 | Turn raw sources into wiki pages        | `/llm-wiki:compile [<path>]`                |
 | Ask the wiki a question                 | `/llm-wiki:query <question>`                |
