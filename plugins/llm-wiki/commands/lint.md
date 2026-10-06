@@ -14,4 +14,4 @@ judgment stays with the user.
    - Stale DERIVED concepts (a newer source appears to supersede a synthesized conclusion) -> FLAG and ASK the user; NEVER auto-update them.
    - Do NOT flag uncovered gaps in sources (those are fine).
 4. Save a dated report to `W/outputs/reports/YYYY-MM-DD-lint.md` -- a sibling of `wiki/`, NOT inside it (`W/outputs/`, never `W/wiki/outputs/`). Reports must stay out of the `wiki/` graph/embedding scan; if you find prior reports under `wiki/`, they drifted -- do not follow them.
-5. Append a lint entry to `W/log.md`. Commit. Never push.
+5. Log and commit: `llm-wiki log-commit <topic> lint -- '<counts, e.g. 2 dead links, 1 orphan, 3 auto-fixed>'`. Put each free-text argument in single quotes and write each `'` in it as `'\''`. Do not edit `W/log.md` or run git yourself. Never push.

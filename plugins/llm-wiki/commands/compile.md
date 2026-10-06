@@ -28,5 +28,4 @@ read, then an informed merge. Follow the injected conventions exactly.
    c. Backlink audit: `grep -rln "<new title>" "W/wiki/"` and add missing `[[wikilinks]]`.
    d. Update `W/wiki/index.md`.
    e. Set `compiled: true` in each source's `.meta.md`.
-6. Append a compile entry to `W/log.md`. Commit. Never push.
-7. If `command -v qmd` succeeds: `qmd embed --collection <topic>`.
+6. Log, commit, and refresh search: `llm-wiki log-commit <topic> compile -- '<title>' '<one-line description>'`. Put each free-text argument in single quotes and write each `'` in it as `'\''`. Do not edit `W/log.md` or run git or qmd yourself. Never push.

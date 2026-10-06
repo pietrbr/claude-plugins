@@ -17,13 +17,18 @@ Subcommands:
   resolve                       (UserPromptSubmit hook; reads hook JSON on stdin)
   dep-check                     (SessionStart hook; reads hook JSON on stdin)
   context <cwd>                 print vault_path/topic/templates_path/etc. for a command
-  run <command> <cwd> ['args']  run a hook-answered command; args is one string, split like a shell
+  run <command> -- <cwd> ['args']
+                                run a hook-answered command; args is one string, split like a shell
   doctor <cwd>                  report environment, config, vault, and bindings
   merge-scan <from> <into>      classify <from>'s raw sources and pages against <into>
+  log-commit <topic> <op> <title> [<body>]
+                                append a log entry, commit only that topic, refresh qmd
   topic-set <cwd> <name>
   topic-list
   config-set <key> <value>
 """
+import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -41,6 +46,12 @@ TOPICS_FILE = CONFIG_DIR / "topics.json"
 # Commands that may run without a topic bound for the cwd (bootstrap).
 EXEMPT = {"init", "doctor", "merge", "list", "set-vault", "set-topic", "remove"}
 PLUGIN_PREFIX = "llm-wiki:"
+LOG_OPS = ("init", "ingest", "compile", "query", "lint", "merge")
+EMBED_OPS = {"compile", "query", "lint", "merge"}
+
+
+class CliError(Exception):
+    pass
 
 
 def plugin_root() -> Path:
@@ -263,22 +274,16 @@ def merge_scan(src: Path, dst: Path) -> dict:
     }
 
 
-def cmd_merge_scan(src_name: str, dst_name: str) -> int:
-    vault = vault_path()
-    if not vault:
-        sys.stderr.write("llm-wiki: no vault set\n")
-        return 1
-    root = Path(vault)
-    src, dst = _topic_dir(root, src_name), _topic_dir(root, dst_name)
-    for name, d in ((src_name, src), (dst_name, dst)):
-        if d is None:
-            sys.stderr.write(f"llm-wiki: no topic '{name}' in {root}\n")
-            return 1
+def cmd_merge_scan(argv: list) -> str:
+    ap = argparse.ArgumentParser(prog="llm-wiki merge-scan")
+    ap.add_argument("from_topic")
+    ap.add_argument("into_topic")
+    a = ap.parse_args(argv)
+    root = _vault_root()
+    src, dst = _require_topic(root, a.from_topic), _require_topic(root, a.into_topic)
     if src == dst:
-        sys.stderr.write("llm-wiki: cannot merge a topic into itself\n")
-        return 2
-    print(json.dumps(merge_scan(src, dst), indent=2))
-    return 0
+        raise CliError("cannot merge a topic into itself")
+    return json.dumps(merge_scan(src, dst), indent=2)
 
 
 def _git(vault: Path, *args: str) -> subprocess.CompletedProcess:
@@ -365,21 +370,15 @@ def run_remove(cwd: str, args: list) -> str:
 
     for name in names:
         shutil.rmtree(root / name)
-    notes = []
-    if shutil.which("qmd"):
-        listed = subprocess.run(["qmd", "collection", "list"], capture_output=True, text=True).stdout
-        for name in names:
-            if f"\n{name} (qmd://" not in "\n" + listed:
-                continue
-            if subprocess.run(["qmd", "collection", "remove", name], capture_output=True).returncode != 0:
-                notes.append(f"qmd collection remove {name} failed")
+    notes = [qmd_run(name, "collection", "remove", name) for name in names]
     topics = _load(TOPICS_FILE)
     unbound = sorted(d for d, t in topics.items() if t in names)
     _save(TOPICS_FILE, {d: t for d, t in topics.items() if t not in names})
-    _git(root, "add", "-A", "--", *names)
-    commit = _git(root, "commit", "-q", "-m", "remove: " + ", ".join(names), "--", *names)
-    if commit.returncode != 0:
-        notes.append("git commit failed: " + (commit.stderr or commit.stdout).strip())
+    try:
+        commit_paths(root, names, "remove: " + ", ".join(names))
+    except CliError as e:
+        notes.append(str(e))
+    notes = [n for n in notes if n]
 
     lines = ["Removed: " + ", ".join(names)]
     lines += [f"  unbound: {d}" for d in unbound]
@@ -387,6 +386,96 @@ def run_remove(cwd: str, args: list) -> str:
     recover = ["git", "-C", str(root), "checkout", head, "--", *names]
     lines.append("Recover with: " + " ".join(shlex.quote(a) for a in recover))
     return "\n".join(lines)
+
+
+def _today() -> str:
+    return datetime.date.today().isoformat()
+
+
+def _vault_root() -> Path:
+    vault = vault_path()
+    if not vault:
+        raise CliError("no vault set; run /llm-wiki:set-vault <path>")
+    root = Path(vault).resolve()
+    if not _is_git_repo(root):
+        raise CliError(f"{root} is not the root of a git repo")
+    return root
+
+
+def _require_topic(root: Path, name: str) -> Path:
+    d = _topic_dir(root, name)
+    if d is None:
+        raise CliError(f"no topic '{name}' in {root}")
+    return d
+
+
+def append_log(topic_dir: Path, op: str, title: str, body: str = "") -> str:
+    """Append an entry and return the previous log text, for rollback."""
+    log = topic_dir / "log.md"
+    before = log.read_text() if log.exists() else ""
+    text = before if not before or before.endswith("\n") else before + "\n"
+    body = " ".join(body.split())
+    log.write_text(text + f"\n## [{_today()}] {op} | {' '.join(title.split())}\n" + (body + "\n" if body else ""))
+    return before
+
+
+def commit_paths(root: Path, paths: list, message: str) -> list:
+    """Stage and commit only `paths`; return the committed file names."""
+    added = _git(root, "add", "-A", "--", *paths)
+    if added.returncode != 0:
+        raise CliError("git add failed: " + added.stderr.strip())
+    staged = _git(root, "diff", "--cached", "--name-only", "--", *paths)
+    if staged.returncode != 0:
+        raise CliError("git diff failed: " + staged.stderr.strip())
+    files = staged.stdout.split()
+    if not files:
+        return []
+    result = _git(root, "commit", "-q", "-m", message, "--", *paths)
+    if result.returncode != 0:
+        raise CliError("git commit failed: " + (result.stderr or result.stdout).strip())
+    return files
+
+
+def _qmd_has(name: str) -> bool:
+    listed = subprocess.run(["qmd", "collection", "list"], capture_output=True, text=True).stdout
+    return f"\n{name} (qmd://" in "\n" + listed
+
+
+def qmd_run(name: str, *args: str) -> str:
+    """Run qmd for an existing collection; return a warning or ''."""
+    if not shutil.which("qmd") or not _qmd_has(name):
+        return ""
+    result = subprocess.run(["qmd", *args], capture_output=True, text=True)
+    if result.returncode == 0:
+        return ""
+    return f"warning: qmd {' '.join(args)} failed: " + (result.stderr or result.stdout).strip()[-300:]
+
+
+def log_commit(name: str, op: str, title: str, body: str = "") -> str:
+    root = _vault_root()
+    topic_dir = _require_topic(root, name)
+    before = append_log(topic_dir, op, title, body)
+    message = f"{op}: {' '.join(title.split())}"
+    try:
+        files = commit_paths(root, [name], message)
+    except CliError:
+        (topic_dir / "log.md").write_text(before)
+        raise
+    head = _git(root, "rev-parse", "--short", "HEAD").stdout.strip()
+    lines = [f"committed {head} {message}"]
+    if op in EMBED_OPS and any(f.startswith(f"{name}/wiki/") for f in files):
+        lines.append(qmd_run(name, "embed", "--collection", name))
+    return "\n".join(line for line in lines if line)
+
+
+def cmd_log_commit(argv: list) -> str:
+    ap = argparse.ArgumentParser(prog="llm-wiki log-commit")
+    ap.add_argument("topic")
+    ap.add_argument("op", choices=LOG_OPS)
+    ap.add_argument("title")
+    ap.add_argument("body", nargs="?", default="")
+    a = ap.parse_args(argv)
+    return log_commit(a.topic, a.op, a.title, a.body)
 
 
 HOOK_ANSWERED = {
@@ -436,77 +525,6 @@ def doctor_report(cwd: str) -> str:
 
 # ---- subcommands ----------------------------------------------------------
 
-def cmd_resolve() -> int:
-    data = read_hook_input()
-    prompt = data.get("prompt", "")
-    cwd = data.get("cwd") or os.getcwd()
-    command = detect_command(prompt)
-    if not command:
-        return 0  # not a wiki command -> no-op, stay silent
-
-    if command in HOOK_ANSWERED and prompt.lstrip().startswith("/" + PLUGIN_PREFIX + command):
-        try:
-            report = HOOK_ANSWERED[command](cwd, _parse_args(prompt, command))
-        except Exception as e:
-            report = f"/{PLUGIN_PREFIX}{command} failed: {e.__class__.__name__}: {e}"
-        print(json.dumps({"decision": "block", "reason": report}))
-        return 0
-
-    topic = topic_for(cwd)
-    if command not in EXEMPT and not topic:
-        # Hard guard: stop the prompt until a topic is bound.
-        print(json.dumps({
-            "decision": "block",
-            "reason": (
-                f"No llm-wiki topic is set for this directory ({cwd}).\n"
-                f"Run /llm-wiki:set-topic <name> to bind it, "
-                f"or /llm-wiki:init <name> to create a new wiki here."
-            ),
-        }))
-        return 0
-
-    conventions = ""
-    conv_file = references_dir() / "conventions.md"
-    try:
-        conventions = conv_file.read_text()
-    except Exception:
-        pass
-
-    additional = (
-        "llm-wiki active context (resolved deterministically; trust these):\n"
-        + context_lines(cwd)
-        + ("\n--- conventions ---\n" + conventions if conventions else "")
-    )
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
-            "additionalContext": additional,
-        }
-    }))
-    return 0
-
-
-def cmd_dep_check() -> int:
-    read_hook_input()  # drain stdin; content unused
-    if shutil.which("qmd"):
-        return 0  # present -> silent
-    msg = ("llm-wiki: qmd not found on PATH. Search falls back to index.md "
-           "(no vector search). Install with: npm i -g @tobilu/qmd")
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "SessionStart",
-            "additionalContext": msg,
-            "systemMessage": msg,
-        }
-    }))
-    return 0
-
-
-def cmd_context(cwd: str) -> int:
-    sys.stdout.write(context_lines(cwd))
-    return 0
-
-
 def config_check_lines() -> list:
     """Reachability + integrity of the config store (distinguishes missing
     from corrupt; reports writability needed by set-vault/set-topic/init)."""
@@ -532,62 +550,145 @@ def config_check_lines() -> list:
     return lines
 
 
-def cmd_topic_set(cwd: str, name: str) -> int:
+def cmd_resolve(argv: list):
+    data = read_hook_input()
+    prompt = data.get("prompt", "")
+    cwd = data.get("cwd") or os.getcwd()
+    command = detect_command(prompt)
+    if not command:
+        return None  # not a wiki command -> no-op, stay silent
+
+    if command in HOOK_ANSWERED and prompt.lstrip().startswith("/" + PLUGIN_PREFIX + command):
+        try:
+            report = HOOK_ANSWERED[command](cwd, _parse_args(prompt, command))
+        except Exception as e:
+            report = f"/{PLUGIN_PREFIX}{command} failed: {e.__class__.__name__}: {e}"
+        if report is not None:
+            return json.dumps({"decision": "block", "reason": report})
+
+    topic = topic_for(cwd)
+    if command not in EXEMPT and not topic:
+        # Hard guard: stop the prompt until a topic is bound.
+        return json.dumps({
+            "decision": "block",
+            "reason": (
+                f"No llm-wiki topic is set for this directory ({cwd}).\n"
+                f"Run /llm-wiki:set-topic <name> to bind it, "
+                f"or /llm-wiki:init <name> to create a new wiki here."
+            ),
+        })
+
+    conventions = ""
+    conv_file = references_dir() / "conventions.md"
+    try:
+        conventions = conv_file.read_text()
+    except Exception:
+        pass
+
+    additional = (
+        "llm-wiki active context (resolved deterministically; trust these):\n"
+        + context_lines(cwd)
+        + ("\n--- conventions ---\n" + conventions if conventions else "")
+    )
+    return json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": additional,
+        }
+    })
+
+
+def cmd_dep_check(argv: list):
+    read_hook_input()  # drain stdin; content unused
+    if shutil.which("qmd"):
+        return None  # present -> silent
+    msg = ("llm-wiki: qmd not found on PATH. Search falls back to index.md "
+           "(no vector search). Install with: npm i -g @tobilu/qmd")
+    return json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": msg,
+            "systemMessage": msg,
+        }
+    })
+
+
+
+
+def _one_parser(name: str, *args: str) -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog=f"llm-wiki {name}")
+    for arg in args:
+        ap.add_argument(arg)
+    return ap
+
+
+def cmd_context(argv: list) -> str:
+    return context_lines(_one_parser("context", "cwd").parse_args(argv).cwd).rstrip("\n")
+
+
+def cmd_doctor(argv: list) -> str:
+    return doctor_report(_one_parser("doctor", "cwd").parse_args(argv).cwd)
+
+
+def cmd_run(argv: list) -> str:
+    ap = _one_parser("run", "command", "cwd")
+    ap.add_argument("args", nargs="?", default="")
+    a = ap.parse_args(argv)
+    if a.command not in HOOK_ANSWERED:
+        raise CliError(f"'{a.command}' is not hook-answered")
+    report = HOOK_ANSWERED[a.command](a.cwd, _split_args(a.args))
+    if report is None:
+        raise CliError(f"'{a.command}' needs the model for these arguments")
+    return report
+
+
+def cmd_topic_set(argv: list) -> str:
+    a = _one_parser("topic-set", "cwd", "topic").parse_args(argv)
     data = _load(TOPICS_FILE)
-    data[os.path.abspath(cwd)] = name
+    data[os.path.abspath(a.cwd)] = a.topic
     _save(TOPICS_FILE, data)
-    print(f"Bound {os.path.abspath(cwd)} -> {name}")
-    return 0
+    return f"Bound {os.path.abspath(a.cwd)} -> {a.topic}"
 
 
-def cmd_topic_list() -> int:
-    for k, v in sorted(_load(TOPICS_FILE).items()):
-        print(f"{k}\t{v}")
-    return 0
+def cmd_topic_list(argv: list) -> str:
+    _one_parser("topic-list").parse_args(argv)
+    return "\n".join(f"{k}\t{v}" for k, v in sorted(_load(TOPICS_FILE).items()))
 
 
-def cmd_config_set(key: str, value: str) -> int:
+def cmd_config_set(argv: list) -> str:
+    a = _one_parser("config-set", "key", "value").parse_args(argv)
     data = _load(CONFIG_FILE)
-    data[key] = value
+    data[a.key] = a.value
     _save(CONFIG_FILE, data)
-    print(f"{key}={value}")
-    return 0
+    return f"{a.key}={a.value}"
+
+
+ACTIONS = {
+    "resolve": cmd_resolve,
+    "dep-check": cmd_dep_check,
+    "context": cmd_context,
+    "run": cmd_run,
+    "doctor": cmd_doctor,
+    "merge-scan": cmd_merge_scan,
+    "log-commit": cmd_log_commit,
+    "topic-set": cmd_topic_set,
+    "topic-list": cmd_topic_list,
+    "config-set": cmd_config_set,
+}
 
 
 def main(argv) -> int:
-    if not argv:
+    if not argv or argv[0] not in ACTIONS:
         sys.stderr.write(__doc__)
         return 2
-    op, rest = argv[0], argv[1:]
     try:
-        if op == "resolve":
-            return cmd_resolve()
-        if op == "dep-check":
-            return cmd_dep_check()
-        if op == "context":
-            return cmd_context(rest[0])
-        if op == "merge-scan":
-            return cmd_merge_scan(rest[0], rest[1])
-        if op == "run":
-            if rest[0] not in HOOK_ANSWERED:
-                sys.stderr.write(f"llm-wiki: '{rest[0]}' is not hook-answered\n")
-                return 2
-            print(HOOK_ANSWERED[rest[0]](rest[1], _split_args(" ".join(rest[2:]))))
-            return 0
-        if op == "doctor":
-            print(doctor_report(rest[0]))
-            return 0
-        if op == "topic-set":
-            return cmd_topic_set(rest[0], rest[1])
-        if op == "topic-list":
-            return cmd_topic_list()
-        if op == "config-set":
-            return cmd_config_set(rest[0], rest[1])
-    except IndexError:
-        sys.stderr.write(f"llm-wiki: missing argument for '{op}'\n")
-        return 2
-    sys.stderr.write(f"llm-wiki: unknown subcommand '{op}'\n")
-    return 2
+        out = ACTIONS[argv[0]](argv[1:])
+    except CliError as e:
+        sys.stderr.write(f"llm-wiki: {e}\n")
+        return 1
+    if out:
+        print(out)
+    return 0
 
 
 if __name__ == "__main__":
