@@ -92,7 +92,10 @@ class ScopeTest(unittest.TestCase):
 
     def test_untouched_slop_is_out_of_scope(self):
         self.fixture.init()
-        path = self.fixture.write("app.py", "def f(counter):\n    # increment the counter\n    counter += 1\n    return counter\n")
+        path = self.fixture.write(
+            "app.py",
+            "def f(counter):\n    # increment the counter\n    counter += 1\n    return counter\n",
+        )
         self.fixture.git("add", "app.py")
         self.fixture.git("commit", "-qm", "seed")
         done = run(path, cwd=self.fixture.dir)
@@ -100,7 +103,10 @@ class ScopeTest(unittest.TestCase):
 
     def test_all_overrides_scope(self):
         self.fixture.init()
-        path = self.fixture.write("app.py", "def f(counter):\n    # increment the counter\n    counter += 1\n    return counter\n")
+        path = self.fixture.write(
+            "app.py",
+            "def f(counter):\n    # increment the counter\n    counter += 1\n    return counter\n",
+        )
         self.fixture.git("add", "app.py")
         self.fixture.git("commit", "-qm", "seed")
         done = run("--all", path, cwd=self.fixture.dir)
@@ -109,36 +115,54 @@ class ScopeTest(unittest.TestCase):
 
     def test_changed_line_is_in_scope(self):
         self.fixture.init()
-        self.fixture.write("app.py", "def f(counter):\n    counter += 1\n    return counter\n")
+        self.fixture.write(
+            "app.py", "def f(counter):\n    counter += 1\n    return counter\n"
+        )
         self.fixture.git("add", "app.py")
         self.fixture.git("commit", "-qm", "seed")
-        path = self.fixture.write("app.py", "def f(counter):\n    # increment the counter\n    counter += 1\n    return counter\n")
+        path = self.fixture.write(
+            "app.py",
+            "def f(counter):\n    # increment the counter\n    counter += 1\n    return counter\n",
+        )
         done = run(path, cwd=self.fixture.dir)
         self.assertEqual(done.returncode, 2)
         self.assertIn("restatement", rules_of(done.stdout))
 
     def test_untracked_file_is_fully_in_scope(self):
         self.fixture.init()
-        path = self.fixture.write("new.py", "def f(counter):\n    # increment the counter\n    counter += 1\n    return counter\n")
+        path = self.fixture.write(
+            "new.py",
+            "def f(counter):\n    # increment the counter\n    counter += 1\n    return counter\n",
+        )
         done = run(path, cwd=self.fixture.dir)
         self.assertEqual(done.returncode, 2)
 
     def test_no_repo_is_fully_in_scope(self):
-        path = self.fixture.write("loose.py", "def f(counter):\n    # increment the counter\n    counter += 1\n    return counter\n")
+        path = self.fixture.write(
+            "loose.py",
+            "def f(counter):\n    # increment the counter\n    counter += 1\n    return counter\n",
+        )
         done = run(path)
         self.assertEqual(done.returncode, 2)
 
     def test_since_moves_the_base(self):
         self.fixture.init()
-        self.fixture.write("app.py", "def f(counter):\n    counter += 1\n    return counter\n")
+        self.fixture.write(
+            "app.py", "def f(counter):\n    counter += 1\n    return counter\n"
+        )
         self.fixture.git("add", "app.py")
         self.fixture.git("commit", "-qm", "seed")
         self.fixture.git("branch", "base")
-        path = self.fixture.write("app.py", "def f(counter):\n    # increment the counter\n    counter += 1\n    return counter\n")
+        path = self.fixture.write(
+            "app.py",
+            "def f(counter):\n    # increment the counter\n    counter += 1\n    return counter\n",
+        )
         self.fixture.git("add", "app.py")
         self.fixture.git("commit", "-qm", "slop")
         self.assertEqual(run(path, cwd=self.fixture.dir).returncode, 0)
-        self.assertEqual(run("--since", "base", path, cwd=self.fixture.dir).returncode, 2)
+        self.assertEqual(
+            run("--since", "base", path, cwd=self.fixture.dir).returncode, 2
+        )
 
 
 class AllowlistTest(unittest.TestCase):
@@ -149,25 +173,40 @@ class AllowlistTest(unittest.TestCase):
             return run("--all", str(path))
 
     def test_directive_is_allowed(self):
-        self.assertEqual(self.check("import os  # noqa: F401\n\nprint(os)\n").returncode, 0)
+        self.assertEqual(
+            self.check("import os  # noqa: F401\n\nprint(os)\n").returncode, 0
+        )
 
     def test_shouted_todo_is_allowed(self):
-        self.assertEqual(self.check("def f():\n    # TODO: fix later\n    return 1\n").returncode, 0)
+        self.assertEqual(
+            self.check("def f():\n    # TODO: fix later\n    return 1\n").returncode, 0
+        )
 
     def test_deferral_defeats_the_marker(self):
-        done = self.check("def f():\n    # TODO: revisit once the codec lands\n    return 1\n")
+        done = self.check(
+            "def f():\n    # TODO: revisit once the codec lands\n    return 1\n"
+        )
         self.assertEqual(done.returncode, 2)
         self.assertIn("history", rules_of(done.stdout))
 
     def test_spec_citation_is_allowed(self):
-        self.assertEqual(self.check("def f(frame):\n    # 3GPP TS 38.211 fixes the order\n    return frame\n").returncode, 0)
+        self.assertEqual(
+            self.check(
+                "def f(frame):\n    # 3GPP TS 38.211 fixes the order\n    return frame\n"
+            ).returncode,
+            0,
+        )
 
     def test_lowercase_marker_is_not_allowed(self):
-        done = self.check("def f(job):\n    # obviously we note that the fast path wins\n    return fast(job)\n")
+        done = self.check(
+            "def f(job):\n    # obviously we note that the fast path wins\n    return fast(job)\n"
+        )
         self.assertEqual(done.returncode, 2)
 
     def test_shebang_and_license_are_allowed(self):
-        source = "#!/usr/bin/env bash\n# SPDX-License-Identifier: MIT\nset -eu\nmain \"$@\"\n"
+        source = (
+            '#!/usr/bin/env bash\n# SPDX-License-Identifier: MIT\nset -eu\nmain "$@"\n'
+        )
         self.assertEqual(self.check(source, name="run.sh").returncode, 0)
 
 
@@ -179,7 +218,10 @@ class LexerTest(unittest.TestCase):
             return run("--all", str(path))
 
     def test_string_is_not_a_comment(self):
-        done = self.check('def f():\n    prefix = "# increment the counter"\n    return prefix\n', "a.py")
+        done = self.check(
+            'def f():\n    prefix = "# increment the counter"\n    return prefix\n',
+            "a.py",
+        )
         self.assertEqual(done.returncode, 0, done.stdout)
 
     def test_shell_word_boundary_hash(self):
@@ -187,7 +229,10 @@ class LexerTest(unittest.TestCase):
         self.assertEqual(self.check(source, "a.sh").returncode, 0)
 
     def test_trailing_comment_is_exempt(self):
-        done = self.check("def f():\n    timeout = 5  # seconds\n    limit = 10  # limit\n    return timeout, limit\n", "a.py")
+        done = self.check(
+            "def f():\n    timeout = 5  # seconds\n    limit = 10  # limit\n    return timeout, limit\n",
+            "a.py",
+        )
         self.assertEqual(done.returncode, 0, done.stdout)
 
     def test_run_reports_verbose_once(self):
@@ -254,7 +299,9 @@ class HookTest(unittest.TestCase):
                 "def f(counter):\n    # increment the counter\n    counter += 1\n    return counter\n",
                 encoding="utf8",
             )
-            payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": path}})
+            payload = json.dumps(
+                {"tool_name": "Edit", "tool_input": {"file_path": path}}
+            )
             done = run("--hook", "--all", stdin=payload)
         self.assertEqual(done.returncode, 2)
         self.assertIn("restatement", done.stderr)
@@ -271,7 +318,11 @@ class HookTest(unittest.TestCase):
 
     def test_wrapper_fails_open_without_payload(self):
         done = subprocess.run(
-            [WRAPPER, "--hook"], input="", capture_output=True, text=True, env=ENV,
+            [WRAPPER, "--hook"],
+            input="",
+            capture_output=True,
+            text=True,
+            env=ENV,
             check=False,
         )
         self.assertEqual(done.returncode, 0)
@@ -290,9 +341,12 @@ class CorpusTest(unittest.TestCase):
         for line in run("--list-rules").stdout.splitlines():
             name = line.split()[0]
             (advisories if "(advisory)" in line else rules).add(name)
-        self.assertEqual(rules - {case["expect"] for case in corpus if case["expect"]}, set())
         self.assertEqual(
-            advisories - {case.get("advisory") for case in corpus if case.get("advisory")},
+            rules - {case["expect"] for case in corpus if case["expect"]}, set()
+        )
+        self.assertEqual(
+            advisories
+            - {case.get("advisory") for case in corpus if case.get("advisory")},
             {"unreviewed"},
         )
 
@@ -306,11 +360,15 @@ class AstTest(unittest.TestCase):
             return wrapped("--all", str(path))
 
     def test_budget_zero_in_a_small_function(self):
-        done = self.check("def tiny(value):\n    # clamp it\n    return min(value, 255)\n")
+        done = self.check(
+            "def tiny(value):\n    # clamp it\n    return min(value, 255)\n"
+        )
         self.assertIn("budget", rules_of(done.stdout))
 
     def test_redundant_docstring(self):
-        done = self.check('def add_one(counter):\n    """Add one to counter."""\n    return counter + 1\n')
+        done = self.check(
+            'def add_one(counter):\n    """Add one to counter."""\n    return counter + 1\n'
+        )
         self.assertIn("redundant-docstring", rules_of(done.stdout))
 
 
@@ -373,7 +431,9 @@ class AdvisoryTest(unittest.TestCase):
                 "    return counter\n",
                 encoding="utf8",
             )
-            stdin = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(path)}})
+            stdin = json.dumps(
+                {"tool_name": "Edit", "tool_input": {"file_path": str(path)}}
+            )
             done = wrapped("--hook", "--all", "--no-rules", "budget", stdin=stdin)
         self.assertEqual(done.returncode, 2)
         self.assertIn("restatement", done.stderr)
@@ -430,7 +490,11 @@ class ProvisioningTest(unittest.TestCase):
     def test_wrapper_runs_without_uv(self):
         env = {**ENV, "COMMENT_DESLOP_NO_UV": "1"}
         done = subprocess.run(
-            [WRAPPER, "--list-rules"], capture_output=True, text=True, env=env, check=False
+            [WRAPPER, "--list-rules"],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
         )
         self.assertEqual(done.returncode, 0)
         self.assertIn("restatement", done.stdout)
@@ -536,7 +600,9 @@ class StopTest(unittest.TestCase):
 
     def test_suppression_survives_an_unrelated_edit(self):
         self.stop()
-        self.app.write_text(self.SLOP + "\n\ndef extra():\n    return 7\n", encoding="utf8")
+        self.app.write_text(
+            self.SLOP + "\n\ndef extra():\n    return 7\n", encoding="utf8"
+        )
         self.assertEqual(self.stop().returncode, 0)
 
     def test_editing_the_comment_reports_again(self):
@@ -549,7 +615,9 @@ class StopTest(unittest.TestCase):
 
     def test_changed_adjacent_code_reports_again(self):
         self.stop()
-        self.app.write_text(self.SLOP.replace("counter = item + 1", "counter += 1"), encoding="utf8")
+        self.app.write_text(
+            self.SLOP.replace("counter = item + 1", "counter += 1"), encoding="utf8"
+        )
         self.assertEqual(self.stop().returncode, 2)
 
     def test_a_separate_session_is_not_suppressed(self):
