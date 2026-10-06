@@ -1,8 +1,8 @@
 ---
 description: List wiki topics, their size, and bound directories
 argument-hint: (no arguments)
+allowed-tools: Bash(llm-wiki:*)
 ---
 
-The resolution hook answers this command itself, without a model turn. If you
-see this text, the hook did not run: run `llm-wiki run list -- "$PWD"`
-and print its output verbatim, in a code block, with nothing else.
+Run `llm-wiki list '<cwd>'`, where `<cwd>` is the `cwd` value from the injected context (or `"$PWD"` if there is none). Print its output verbatim in a code block, with
+nothing else. Read-only: change nothing.

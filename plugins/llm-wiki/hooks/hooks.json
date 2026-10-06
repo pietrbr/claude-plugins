@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/llm-wiki\" resolve",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/llm-wiki-hook\"",
             "timeout": 10
           }
         ]

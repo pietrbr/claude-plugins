@@ -1,8 +1,9 @@
 # llm-wiki conventions (canonical)
 
 These rules govern every operation. They are injected into context by the
-resolution hook and are the base layer; a vault-root `CLAUDE.md` then a topic
-`CLAUDE.md` may override them (last-wins). Keep them short.
+prompt hook (or by `llm-wiki context --conventions`) and are the base layer; a
+vault-root `CLAUDE.md` then a topic `CLAUDE.md` may override them (last-wins).
+Keep them short.
 
 ## Output policy (chat)
 

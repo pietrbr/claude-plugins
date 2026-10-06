@@ -16,13 +16,15 @@ The original pattern is vendored verbatim at [`KARPATHY-LLM-WIKI.md`](./KARPATHY
   skill. Ad-hoc free-form chat _inside_ the vault is not a supported access path --
   the commands inject the conventions and resolve the active wiki for you; raw chat
   does not.
-- **Deterministic state.** A small CLI (`bin/llm-wiki`) and two hooks resolve
-  the vault path and active topic and inject them into context, so commands never
-  guess where you are.
-- **Hook-answered commands.** `list`, `set-vault`, `set-topic`, and `remove` need no
-  judgment, so the prompt hook runs them in the CLI and shows the result without a
-  model turn. The model does not see that output. `doctor` runs the CLI report inside
-  its prompt, so the model sees it and can discuss it.
+- **Deterministic work in a CLI.** `bin/llm-wiki` does every step that needs no
+  judgment: it resolves the vault and the topic bound to the directory, scaffolds,
+  copies sources, writes sidecars, logs, and commits. The model runs it from the
+  command files and sees every result. `ingest` and `log-commit` refuse when no
+  topic is bound to the directory.
+- **Prompt hook.** `bin/llm-wiki-hook` (shell and `jq`) runs on each prompt and exits
+  at once unless the prompt names an `llm-wiki:` command. For a command that needs a
+  topic, it blocks the prompt when the directory has none. Otherwise it injects the
+  vault path, the topic, and the conventions.
 
 ## Install
 
@@ -35,6 +37,8 @@ The original pattern is vendored verbatim at [`KARPATHY-LLM-WIKI.md`](./KARPATHY
 
 - **Git** -- the vault is a git repo; the plugin auto-commits (never pushes). Set
   `git config --global user.name` / `user.email`.
+- **jq** -- the prompt hook reads its input with `jq`. macOS 15 and later include it
+  at `/usr/bin/jq`; elsewhere install it from your package manager.
 - **qmd (optional)** -- hybrid BM25 + vector search over wiki pages. Without it,
   search falls back to `index.md`, which is fine for small/medium wikis. Install with:
   ```
@@ -137,8 +141,8 @@ committed and not synced):
 - `config.json` -- `{ "vault_path": "..." }`
 - `topics.json` -- `{ "<abs-dir>": "<topic>" }`
 
-These are read/written by `bin/llm-wiki`, which the hooks and commands call. You
-never invoke it directly.
+These are read/written by `bin/llm-wiki`, which the session hook and the commands
+call. You never invoke it directly.
 
 ## Obsidian integration
 

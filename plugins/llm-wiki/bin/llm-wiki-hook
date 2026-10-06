@@ -1,0 +1,59 @@
+#!/bin/sh
+# UserPromptSubmit hook: for a prompt that names an llm-wiki command, block it
+# when the command needs a topic and none is bound to the directory; otherwise
+# inject the vault, the topic, and the conventions. Other prompts pass through.
+
+EXEMPT=" init doctor merge list set-vault set-topic remove "
+CONFIG="$HOME/.config/llm-wiki"
+PLUGIN_ROOT=$(cd "${0%/*}/.." && pwd)
+CONVENTIONS="$PLUGIN_ROOT/references/conventions.md"
+
+input=$(cat)
+case $input in
+*llm-wiki:*) ;;
+*) exit 0 ;;
+esac
+
+if ! command -v jq >/dev/null 2>&1; then
+  case $input in
+  *llm-wiki:doctor*) exit 0 ;;
+  esac
+  printf '%s\n' '{"decision":"block","reason":"llm-wiki needs jq for its prompt hook. Install it (for example: brew install jq) and send the prompt again."}'
+  exit 0
+fi
+
+prompt=$(printf '%s' "$input" | jq -r '.prompt // ""')
+command=$(printf '%s' "$prompt" | grep -oE 'llm-wiki:[A-Za-z][A-Za-z0-9_-]*' | head -n 1 | cut -d: -f2)
+if [ -z "$command" ]; then
+  exit 0
+fi
+
+cwd=$(printf '%s' "$input" | jq -r '.cwd // ""')
+if [ -z "$cwd" ]; then
+  cwd=$PWD
+fi
+if [ "$cwd" != / ]; then
+  cwd=${cwd%/}
+fi
+vault=$(jq -r 'if type == "object" then .vault_path // "" else "" end' "$CONFIG/config.json" 2>/dev/null)
+topic=$(jq -r --arg d "$cwd" 'if type == "object" then .[$d] // "" else "" end' "$CONFIG/topics.json" 2>/dev/null)
+
+case $EXEMPT in
+*" $command "*) ;;
+*)
+  if [ -z "$topic" ]; then
+    jq -n --arg cwd "$cwd" '{decision: "block", reason: ("No llm-wiki topic is set for this directory (\($cwd)).\nRun /llm-wiki:set-topic <name> to bind it, or /llm-wiki:init <name> to create a new wiki here.")}'
+    exit 0
+  fi
+  ;;
+esac
+
+conventions=$(cat "$CONVENTIONS" 2>/dev/null) || conventions="(conventions file unreadable: $CONVENTIONS)"
+jq -n \
+  --arg cwd "$cwd" \
+  --arg vault "$vault" \
+  --arg topic "$topic" \
+  --arg templates "$PLUGIN_ROOT/references/templates" \
+  --arg conventions_path "$CONVENTIONS" \
+  --arg conventions "$conventions" \
+  '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: ("llm-wiki active context (resolved deterministically; trust these):\ncwd=\($cwd)\nvault_path=\($vault)\ntopic=\($topic)\ntemplates_path=\($templates)\nconventions_path=\($conventions_path)\n\n--- conventions ---\n" + $conventions)}}' || exit 0

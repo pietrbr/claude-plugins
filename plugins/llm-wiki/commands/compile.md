@@ -6,7 +6,8 @@ argument-hint: [<path>]
 Turn uncompiled raw sources into wiki pages. Two passes: a WIKI-BLIND faithful
 read, then an informed merge. Follow the injected conventions exactly.
 
-1. Resolve context: `llm-wiki context "$PWD"`. Need a `topic`; if empty, stop and tell the user to run `/llm-wiki:set-topic`. Let `W = <vault_path>/<topic>`. Read `<templates_path>/source-summary.md` (and `concept.md`/`person.md` as needed).
+0. Context: the prompt hook injected `vault_path`, `topic`, `templates_path`, and the conventions. If that context is missing (for example, a skill started this command), run `llm-wiki context --conventions "$PWD"` once, before any `cd`, and use its output. Use the `cwd` value from the context, in single quotes, for `<cwd>`, never `$PWD`: the shell can change directory during the command.
+1. If `topic` in the context is empty, stop and tell the user to run `/llm-wiki:set-topic`. Let `W = <vault_path>/<topic>`. Read `<templates_path>/source-summary.md` (and `concept.md`/`person.md` as needed).
 2. Identify sources (no content reads):
    - If `$ARGUMENTS` is a path: that source + its `.meta.md` sidecar.
    - Else: read `W/raw/documents/*.meta.md`; select those with `compiled: false`.
@@ -28,4 +29,4 @@ read, then an informed merge. Follow the injected conventions exactly.
    c. Backlink audit: `grep -rln "<new title>" "W/wiki/"` and add missing `[[wikilinks]]`.
    d. Update `W/wiki/index.md`.
    e. Set `compiled: true` in each source's `.meta.md`.
-6. Log, commit, and refresh search: `llm-wiki log-commit <topic> compile -- '<title>' '<one-line description>'`. Put each free-text argument in single quotes and write each `'` in it as `'\''`. Do not edit `W/log.md` or run git or qmd yourself. Never push.
+6. Log, commit, and refresh search: `llm-wiki log-commit '<cwd>' compile -- '<title>' '<one-line description>'`. Put each free-text argument in single quotes and write each `'` in it as `'\''`. Do not edit `W/log.md` or run git or qmd yourself. Never push.

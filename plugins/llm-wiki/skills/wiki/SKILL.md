@@ -15,7 +15,7 @@ lints for gaps. The human curates sources and asks questions; the LLM does the
 bookkeeping.
 
 This skill only routes. Each operation is its own command, which carries its own
-instructions and gets its vault/topic/conventions injected by the resolution hook.
+instructions and gets its vault/topic/conventions from the prompt hook or `llm-wiki context`.
 Do NOT perform operations from here -- invoke the matching command.
 
 ## Routing
