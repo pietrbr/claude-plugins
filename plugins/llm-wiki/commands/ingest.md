@@ -4,32 +4,20 @@ argument-hint: <path|url> [--type <type>]
 ---
 
 Acquire a source and save it verbatim. Do NOT read its full content and do NOT
-create wiki pages (that is `compile`). No prompts; this is the default behavior.
+create wiki pages (that is `compile`). Do not ask the user any questions.
 
-1. Resolve context: `llm-wiki context "$PWD"`. If `topic` is empty, stop and tell the user to run `/llm-wiki:set-topic`. Let `W = <vault_path>/<topic>`.
-2. Parse `$ARGUMENTS`: the source is the file path or URL; an optional `--type <t>` sets the source-type (else auto-classify in step 4).
-3. Confirm existence WITHOUT reading full content:
-   - File: `test -f "<path>"`; if missing, report and stop.
-   - URL: proceed to step 5.
-4. Classify + title cheaply (no full read):
-   - Types (provenance only; see conventions): `paper` (peer-reviewed/scholarly), `article` (informal external writing, incl. product docs/datasheets/manuals), `standard` (normative standards-body doc: 3GPP TS/TR, RFC, IEEE, ETSI, O-RAN), `conversation` (transcript of talk/interview/meeting/chat), `user-note` (the user's own authored note). paper vs article: "scholarly-reviewed?" -- preprint=`paper`, blog/whitepaper/product docs=`article`.
-   - Type: if `--type <t>` was given, use it. Else peek only the start of the file -- `head -40` for text, or the first page for a PDF -- and pick the best-fitting type from that peek. Do not read further; never ask the user when ambiguous -- take the best guess.
-   - Title: first `#` heading or YAML `title:` in the peek (first page for a PDF); else from the filename.
-5. Save verbatim to `W/raw/documents/YYYY-MM-DD-<slug>.<ext>`:
-   - File: `cp "<path>" "W/raw/documents/YYYY-MM-DD-<slug>.<ext>"`. NEVER read-and-rewrite (it corrupts PDFs/binaries). If the file already lives under `W/raw/`, skip the copy.
-   - URL: WebFetch the content; save as `W/raw/documents/YYYY-MM-DD-<slug>.md`.
-   - Disambiguate slug collisions (same date+slug) with a numeric suffix.
-6. Write a sidecar `W/raw/documents/YYYY-MM-DD-<slug>.meta.md`:
-   ```yaml
-   ---
-   date: YYYY-MM-DD
-   source-type: <paper|article|standard|conversation|user-note>
-   source-uri: <canonical external URL/DOI, or the original path it was ingested from; leave empty if neither -- NEVER a vault-internal raw/ path (that is source-file's job)>
-   source-file: YYYY-MM-DD-<slug>.<ext>
-   title: <extracted or inferred title>
-   compiled: false
-   ---
+1. Resolve context: `llm-wiki context "$PWD"`. If `topic` is empty, stop and tell the user to run `/llm-wiki:set-topic`.
+2. Parse `$ARGUMENTS`: the source is the file path or URL. An optional `--type <t>` sets the source-type. Without it, classify the source in step 3.
+3. Classify + title cheaply (no full read):
+   - Types (provenance only, see conventions): `paper` (peer-reviewed/scholarly), `article` (informal external writing, incl. product docs/datasheets/manuals), `standard` (normative standards-body doc: 3GPP TS/TR, RFC, IEEE, ETSI, O-RAN), `conversation` (transcript of talk/interview/meeting/chat), `user-note` (the user's own authored note). For paper vs article, ask "scholarly-reviewed?": a preprint is a `paper`, and a blog, whitepaper, or product doc is an `article`.
+   - Type: if `--type <t>` was given, use it. Else peek only at the start of the file: `head -40` for text, or the first page for a PDF. Pick the best-fitting type from that peek. Do not read further. If the type is ambiguous, take the best guess and do not ask the user.
+   - Title: the first `#` heading or YAML `title:` in the peek (the first page for a PDF). If there is neither, derive it from the filename.
+   - Slug: a short kebab-case name, for example `1202.6501-lee-huang-optdensity`. It is optional for a file: if you omit it, the program uses the file name. It is required for a URL.
+4. URL only: WebFetch the content and write it to a new temp file `<tmp>/<slug>.md`. Use that file as the path in step 5, and the URL as `--uri`. Delete the temp file after step 5.
+5. Save, log, and commit in one call. Put each free-text value in single quotes and write each `'` in it as `'\''`:
    ```
-7. Append an ingest entry to `W/log.md`. Commit. Never push.
-8. Stay silent on success (see the Output policy). Speak only for warnings,
-   conflicts, or errors.
+   llm-wiki ingest <topic> --type <t> --title='<title>' [--uri='<url or DOI>'] [--slug='<slug>'] -- '<path>'
+   ```
+   The program copies the file byte for byte to `raw/documents/YYYY-MM-DD-<slug>.<ext>`. On a name collision, it adds a numeric suffix. Then it writes the `.meta.md` sidecar with `compiled: false`, logs, and commits. Without `--uri`, it records the original path as `source-uri`. Do NOT copy files, write the sidecar, edit `log.md`, or run git yourself.
+6. Stay silent on success (see the Output policy). Speak only for warnings,
+   conflicts, or errors, and quote the program's error verbatim.

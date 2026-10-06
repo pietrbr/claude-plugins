@@ -23,6 +23,8 @@ Subcommands:
   merge-scan <from> <into>      classify <from>'s raw sources and pages against <into>
   log-commit <topic> <op> <title> [<body>]
                                 append a log entry, commit only that topic, refresh qmd
+  ingest <topic> --type T --title=X [--uri=U] [--slug=S] -- <path>
+                                copy a source into raw/documents with a sidecar, log, commit
   topic-set <cwd> <name>
   topic-list
   config-set <key> <value>
@@ -163,7 +165,14 @@ HANDLED_DIRS = ("raw/documents", "raw/attachments", "wiki", "outputs/reports")
 
 
 def _unquote(value: str) -> str:
-    return value[1:-1] if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'" else value
+    if len(value) < 2 or value[0] != value[-1] or value[0] not in "\"'":
+        return value
+    if value[0] == '"':
+        try:
+            return json.loads(value)
+        except ValueError:
+            pass
+    return value[1:-1]
 
 
 def _sidecar(doc: Path) -> dict:
@@ -423,15 +432,18 @@ def commit_paths(root: Path, paths: list, message: str) -> list:
     """Stage and commit only `paths`; return the committed file names."""
     added = _git(root, "add", "-A", "--", *paths)
     if added.returncode != 0:
+        _git(root, "reset", "-q", "--", *paths)
         raise CliError("git add failed: " + added.stderr.strip())
     staged = _git(root, "diff", "--cached", "--name-only", "--", *paths)
-    if staged.returncode != 0:
-        raise CliError("git diff failed: " + staged.stderr.strip())
     files = staged.stdout.split()
-    if not files:
+    if staged.returncode != 0 or not files:
+        _git(root, "reset", "-q", "--", *paths)
+        if staged.returncode != 0:
+            raise CliError("git diff failed: " + staged.stderr.strip())
         return []
     result = _git(root, "commit", "-q", "-m", message, "--", *paths)
     if result.returncode != 0:
+        _git(root, "reset", "-q", "--", *paths)
         raise CliError("git commit failed: " + (result.stderr or result.stdout).strip())
     return files
 
@@ -451,9 +463,8 @@ def qmd_run(name: str, *args: str) -> str:
     return f"warning: qmd {' '.join(args)} failed: " + (result.stderr or result.stdout).strip()[-300:]
 
 
-def log_commit(name: str, op: str, title: str, body: str = "") -> str:
-    root = _vault_root()
-    topic_dir = _require_topic(root, name)
+def _log_commit(root: Path, topic_dir: Path, op: str, title: str, body: str = "") -> str:
+    name = topic_dir.name
     before = append_log(topic_dir, op, title, body)
     message = f"{op}: {' '.join(title.split())}"
     try:
@@ -468,6 +479,11 @@ def log_commit(name: str, op: str, title: str, body: str = "") -> str:
     return "\n".join(line for line in lines if line)
 
 
+def log_commit(name: str, op: str, title: str, body: str = "") -> str:
+    root = _vault_root()
+    return _log_commit(root, _require_topic(root, name), op, title, body)
+
+
 def cmd_log_commit(argv: list) -> str:
     ap = argparse.ArgumentParser(prog="llm-wiki log-commit")
     ap.add_argument("topic")
@@ -476,6 +492,89 @@ def cmd_log_commit(argv: list) -> str:
     ap.add_argument("body", nargs="?", default="")
     a = ap.parse_args(argv)
     return log_commit(a.topic, a.op, a.title, a.body)
+
+
+SOURCE_TYPES = ("paper", "article", "standard", "conversation", "user-note")
+MAX_SLUG = 60
+
+
+def _slugify(text: str) -> str:
+    slug = re.sub(r"[^a-z0-9.]+", "-", text.lower()).strip("-.")
+    return slug[:MAX_SLUG].rstrip("-.") or "source"
+
+
+def _yaml_str(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False) if value else ""
+
+
+def _free_stem(docs: Path, stem: str, ext: str) -> str:
+    candidate, n = stem, 1
+    while (docs / f"{candidate}{ext}").exists() or (docs / f"{candidate}.meta.md").exists():
+        n += 1
+        candidate = f"{stem}-{n}"
+    return candidate
+
+
+def _sidecar_text(source_type: str, uri: str, file_name: str, title: str) -> str:
+    return (
+        "---\n"
+        f"date: {_today()}\n"
+        f"source-type: {source_type}\n"
+        f"source-uri: {_yaml_str(uri)}\n"
+        f"source-file: {file_name}\n"
+        f"title: {_yaml_str(' '.join(title.split()))}\n"
+        "compiled: false\n"
+        "---\n"
+    )
+
+
+def ingest(name: str, src: Path, source_type: str, title: str, uri: str, slug: str) -> str:
+    root = _vault_root()
+    topic_dir = _require_topic(root, name)
+    docs = topic_dir / "raw" / "documents"
+    if not src.is_file():
+        raise CliError(f"no such file: {src}")
+    resolved = src.resolve()
+    in_place = resolved.parent == docs.resolve()
+    if in_place and slug:
+        raise CliError("--slug cannot rename a file that is already in raw/documents")
+    if not in_place and resolved.is_relative_to(topic_dir / "raw"):
+        raise CliError(f"{src} is under raw/ but not in raw/documents; move it there first")
+    if in_place:
+        target = resolved
+        if (docs / f"{target.stem}.meta.md").exists():
+            raise CliError(f"{target.name} already has a sidecar")
+    else:
+        ext = resolved.suffix.lower()
+        target = docs / f"{_free_stem(docs, f'{_today()}-{_slugify(slug or resolved.stem)}', ext)}{ext}"
+        if not uri and not resolved.is_relative_to(root):
+            uri = os.path.abspath(src)
+    sidecar = docs / f"{target.stem}.meta.md"
+    created = []
+    try:
+        if not in_place:
+            docs.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(resolved, target)
+            created.append(target)
+        sidecar.write_text(_sidecar_text(source_type, uri, target.name, title))
+        created.append(sidecar)
+        return _log_commit(root, topic_dir, "ingest", title, f"{source_type} -> raw/documents/{target.name}")
+    except Exception:
+        for f in created:
+            f.unlink(missing_ok=True)
+        raise
+
+
+def cmd_ingest(argv: list) -> str:
+    ap = argparse.ArgumentParser(prog="llm-wiki ingest")
+    ap.add_argument("topic")
+    ap.add_argument("path", type=Path)
+    ap.add_argument("--type", required=True, choices=SOURCE_TYPES)
+    ap.add_argument("--title", required=True)
+    ap.add_argument("--uri", default="")
+    ap.add_argument("--slug", default="")
+    a = ap.parse_args(argv)
+    return ingest(a.topic, a.path, a.type, a.title, a.uri, a.slug)
 
 
 HOOK_ANSWERED = {
@@ -671,6 +770,7 @@ ACTIONS = {
     "doctor": cmd_doctor,
     "merge-scan": cmd_merge_scan,
     "log-commit": cmd_log_commit,
+    "ingest": cmd_ingest,
     "topic-set": cmd_topic_set,
     "topic-list": cmd_topic_list,
     "config-set": cmd_config_set,
