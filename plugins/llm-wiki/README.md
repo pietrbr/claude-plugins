@@ -19,6 +19,10 @@ The original pattern is vendored verbatim at [`KARPATHY-LLM-WIKI.md`](./KARPATHY
 - **Deterministic state.** A small CLI (`bin/llm-wiki-state`) and two hooks resolve
   the vault path and active topic and inject them into context, so commands never
   guess where you are.
+- **Hook-answered commands.** `list`, `set-vault`, `set-topic`, and `remove` need no
+  judgment, so the prompt hook runs them in the CLI and shows the result without a
+  model turn. The model does not see that output. `doctor` runs the CLI report inside
+  its prompt, so the model sees it and can discuss it.
 
 ## Install
 
@@ -67,7 +71,7 @@ Type `/llm-wiki:` and the menu filters to all commands with their argument hints
 | `/llm-wiki:query <question>`   | Answer from the wiki with citations; file the answer.        |
 | `/llm-wiki:lint`               | Audit for dead links, orphans, drift, stale syntheses.       |
 | `/llm-wiki:merge <from> <into>` | Merge a topic into another: dedupe sources, reconcile pages. |
-| `/llm-wiki:remove <topic>`     | Delete a topic (git-recoverable; no confirmation).           |
+| `/llm-wiki:remove <topic>...`  | Delete topics (git-recoverable; no confirmation).            |
 | `/llm-wiki:doctor`             | Report environment + config (qmd, git, vault, topic).        |
 
 ## Key concepts

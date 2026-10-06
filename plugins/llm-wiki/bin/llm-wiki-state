@@ -17,20 +17,20 @@ Subcommands:
   resolve                       (UserPromptSubmit hook; reads hook JSON on stdin)
   dep-check                     (SessionStart hook; reads hook JSON on stdin)
   context <cwd>                 print vault_path/topic/templates_path/etc. for a command
-  topics <cwd>                  list vault topics with counts and bound directories
+  run <command> <cwd> ['args']  run a hook-answered command; args is one string, split like a shell
+  doctor <cwd>                  report environment, config, vault, and bindings
   merge-scan <from> <into>      classify <from>'s raw sources and pages against <into>
   topic-set <cwd> <name>
-  topic-get <cwd>
-  topic-unset <cwd>
   topic-list
-  config-get <key>
   config-set <key> <value>
 """
 import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -39,9 +39,8 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 TOPICS_FILE = CONFIG_DIR / "topics.json"
 
 # Commands that may run without a topic bound for the cwd (bootstrap).
-EXEMPT = {"init", "set-topic", "set-vault", "doctor", "list", "merge"}
+EXEMPT = {"init", "doctor", "merge", "list", "set-vault", "set-topic", "remove"}
 PLUGIN_PREFIX = "llm-wiki:"
-HOOK_ANSWERED = {"list"}
 
 
 def plugin_root() -> Path:
@@ -129,7 +128,7 @@ def topics_report(cwd: str) -> str:
     root = Path(vault)
     if not root.is_dir():
         return f"Vault path is not a directory: {vault}. Fix it with /llm-wiki:set-vault <path>."
-    names = sorted(d.name for d in root.iterdir() if (d / "wiki").is_dir())
+    names = _topic_names(root)
     topics = _load(TOPICS_FILE)
     bindings: dict = {}
     for d, t in sorted(topics.items()):
@@ -269,17 +268,170 @@ def cmd_merge_scan(src_name: str, dst_name: str) -> int:
     if not vault:
         sys.stderr.write("llm-wiki-state: no vault set\n")
         return 1
-    root = Path(vault).resolve()
-    src, dst = (root / src_name).resolve(), (root / dst_name).resolve()
-    for d in (src, dst):
-        if d.parent != root or not (d / "wiki").is_dir():
-            sys.stderr.write(f"llm-wiki-state: no topic at {d}\n")
+    root = Path(vault)
+    src, dst = _topic_dir(root, src_name), _topic_dir(root, dst_name)
+    for name, d in ((src_name, src), (dst_name, dst)):
+        if d is None:
+            sys.stderr.write(f"llm-wiki-state: no topic '{name}' in {root}\n")
             return 1
     if src == dst:
         sys.stderr.write("llm-wiki-state: cannot merge a topic into itself\n")
         return 2
     print(json.dumps(merge_scan(src, dst), indent=2))
     return 0
+
+
+def _git(vault: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(vault), *args], capture_output=True, text=True)
+
+
+def _is_git_repo(vault: Path) -> bool:
+    if shutil.which("git") is None:
+        return False
+    top = _git(vault, "rev-parse", "--show-toplevel")
+    return top.returncode == 0 and Path(top.stdout.strip()).resolve() == vault.resolve()
+
+
+def _topic_names(vault: Path) -> list:
+    if not vault.is_dir():
+        return []
+    return sorted(d.name for d in vault.iterdir() if not d.is_symlink() and (d / "wiki").is_dir())
+
+
+def _topic_dir(vault: Path, name: str):
+    return vault.resolve() / name if name in _topic_names(vault) else None
+
+
+def _is_cache(path: str) -> bool:
+    name = path.rstrip("/").rsplit("/", 1)[-1]
+    return name == ".DS_Store" or ".sqlite" in name
+
+
+def run_list(cwd: str, args: list) -> str:
+    return topics_report(cwd)
+
+
+def run_set_vault(cwd: str, args: list) -> str:
+    if len(args) != 1:
+        return "Usage: /llm-wiki:set-vault <path>"
+    path = Path(cwd, os.path.expanduser(args[0])).resolve()
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return f"Cannot create {path}: {e}"
+    _save(CONFIG_FILE, {**_load(CONFIG_FILE), "vault_path": str(path)})
+    if shutil.which("git") and not _is_git_repo(path):
+        _git(path, "init", "-q")
+    return f"Vault set to {path}."
+
+
+def run_set_topic(cwd: str, args: list) -> str:
+    vault = vault_path()
+    if not vault:
+        return "No vault set. Run /llm-wiki:set-vault <path> first."
+    names = _topic_names(Path(vault))
+    if len(args) != 1:
+        return "Usage: /llm-wiki:set-topic <topic>\nTopics: " + (", ".join(names) or "(none)")
+    if args[0] not in names:
+        return f"No topic '{args[0]}' in {vault}. Run /llm-wiki:init {args[0]} to create it."
+    data = _load(TOPICS_FILE)
+    data[os.path.abspath(cwd)] = args[0]
+    _save(TOPICS_FILE, data)
+    return f"This directory is now bound to topic '{args[0]}'."
+
+
+def run_remove(cwd: str, args: list) -> str:
+    if not args:
+        return "Usage: /llm-wiki:remove <topic> [<topic> ...]"
+    vault = vault_path()
+    if not vault:
+        return "No vault set."
+    root = Path(vault).resolve()
+    missing = [a for a in args if _topic_dir(root, a) is None]
+    if missing:
+        return "Nothing removed. No such topic: " + ", ".join(missing)
+    names = sorted(set(args))
+    if not _is_git_repo(root):
+        return f"Nothing removed. {root} is not the root of a git repo, so the deletion would not be recoverable."
+    status = _git(root, "status", "--porcelain", "-uall", "--ignored", "--", *names)
+    if status.returncode != 0:
+        return "Nothing removed. git status failed:\n" + status.stderr.strip()
+    unsafe = [line for line in status.stdout.splitlines() if not (line.startswith("!! ") and _is_cache(line[3:]))]
+    if unsafe:
+        return "Nothing removed. Commit, discard, or move these files first:\n" + "\n".join(unsafe)
+    head = _git(root, "rev-parse", "--short", "HEAD").stdout.strip()
+    if not head:
+        return "Nothing removed. The vault repo has no commits to recover from."
+
+    for name in names:
+        shutil.rmtree(root / name)
+    notes = []
+    if shutil.which("qmd"):
+        listed = subprocess.run(["qmd", "collection", "list"], capture_output=True, text=True).stdout
+        for name in names:
+            if f"\n{name} (qmd://" not in "\n" + listed:
+                continue
+            if subprocess.run(["qmd", "collection", "remove", name], capture_output=True).returncode != 0:
+                notes.append(f"qmd collection remove {name} failed")
+    topics = _load(TOPICS_FILE)
+    unbound = sorted(d for d, t in topics.items() if t in names)
+    _save(TOPICS_FILE, {d: t for d, t in topics.items() if t not in names})
+    _git(root, "add", "-A", "--", *names)
+    commit = _git(root, "commit", "-q", "-m", "remove: " + ", ".join(names), "--", *names)
+    if commit.returncode != 0:
+        notes.append("git commit failed: " + (commit.stderr or commit.stdout).strip())
+
+    lines = ["Removed: " + ", ".join(names)]
+    lines += [f"  unbound: {d}" for d in unbound]
+    lines += [f"  warning: {n}" for n in notes]
+    recover = ["git", "-C", str(root), "checkout", head, "--", *names]
+    lines.append("Recover with: " + " ".join(shlex.quote(a) for a in recover))
+    return "\n".join(lines)
+
+
+HOOK_ANSWERED = {
+    "list": run_list,
+    "set-vault": run_set_vault,
+    "set-topic": run_set_topic,
+    "remove": run_remove,
+}
+
+
+def _split_args(text: str) -> list:
+    try:
+        return shlex.split(text)
+    except ValueError:
+        return text.split()
+
+
+def _parse_args(prompt: str, command: str) -> list:
+    return _split_args(prompt.lstrip()[len("/" + PLUGIN_PREFIX + command):])
+
+
+def doctor_report(cwd: str) -> str:
+    def item(ok: bool, label: str, hint: str = "") -> str:
+        return f"{'OK     ' if ok else 'MISSING'} {label}" + (f" -- {hint}" if hint and not ok else "")
+
+    lines = [
+        item(bool(shutil.which("qmd")), "qmd", "optional; search falls back to index.md. Install: npm i -g @tobilu/qmd"),
+        item(bool(shutil.which("git")), "git", "required for commits and recovery"),
+    ]
+    lines += config_check_lines()
+    vault = vault_path()
+    root = Path(vault) if vault else None
+    lines.append(item(bool(vault), f"vault_path={vault}", "run /llm-wiki:set-vault <path>"))
+    if root:
+        lines.append(item(root.is_dir(), "vault directory exists", "run /llm-wiki:set-vault <path>"))
+        lines.append(item(root.is_dir() and _is_git_repo(root), "vault is a git repo", f"run git -C {root} init"))
+    topic = topic_for(cwd)
+    lines.append(item(bool(topic), f"topic for {os.path.abspath(cwd)}: {topic or '(none)'}",
+                      "run /llm-wiki:set-topic <topic>"))
+    if root and topic:
+        lines.append(item(_topic_dir(root, topic) is not None, f"topic '{topic}' exists in vault",
+                          f"run /llm-wiki:init {topic} or /llm-wiki:set-topic <topic>"))
+    if root:
+        lines += ["", topics_report(cwd)]
+    return "\n".join(lines)
 
 
 # ---- subcommands ----------------------------------------------------------
@@ -293,7 +445,11 @@ def cmd_resolve() -> int:
         return 0  # not a wiki command -> no-op, stay silent
 
     if command in HOOK_ANSWERED and prompt.lstrip().startswith("/" + PLUGIN_PREFIX + command):
-        print(json.dumps({"decision": "block", "reason": topics_report(cwd)}))
+        try:
+            report = HOOK_ANSWERED[command](cwd, _parse_args(prompt, command))
+        except Exception as e:
+            report = f"/{PLUGIN_PREFIX}{command} failed: {e.__class__.__name__}: {e}"
+        print(json.dumps({"decision": "block", "reason": report}))
         return 0
 
     topic = topic_for(cwd)
@@ -346,36 +502,34 @@ def cmd_dep_check() -> int:
     return 0
 
 
-def cmd_topics(cwd: str) -> int:
-    print(topics_report(cwd))
-    return 0
-
-
 def cmd_context(cwd: str) -> int:
     sys.stdout.write(context_lines(cwd))
     return 0
 
 
-def cmd_config_check() -> int:
+def config_check_lines() -> list:
     """Reachability + integrity of the config store (distinguishes missing
     from corrupt; reports writability needed by set-vault/set-topic/init)."""
-    print(f"config_dir={CONFIG_DIR}")
+    lines = [f"config_dir={CONFIG_DIR}"]
     if CONFIG_DIR.exists():
-        print(f"  dir=exists writable={'yes' if os.access(CONFIG_DIR, os.W_OK) else 'NO'}")
+        lines.append(f"  dir=exists writable={'yes' if os.access(CONFIG_DIR, os.W_OK) else 'NO'}")
     else:
-        print(f"  dir=missing (created on first write; "
-              f"parent writable={'yes' if os.access(CONFIG_DIR.parent, os.W_OK) else 'NO'})")
+        lines.append(f"  dir=missing (created on first write; "
+                     f"parent writable={'yes' if os.access(CONFIG_DIR.parent, os.W_OK) else 'NO'})")
     for label, path in (("config.json", CONFIG_FILE), ("topics.json", TOPICS_FILE)):
         if not path.exists():
-            print(f"  {label}=absent")
+            lines.append(f"  {label}=absent")
             continue
         try:
             data = json.loads(path.read_text())
-            n = len(data) if isinstance(data, dict) else 0
-            print(f"  {label}=ok ({n} keys)")
         except Exception as e:
-            print(f"  {label}=INVALID ({e.__class__.__name__})")
-    return 0
+            lines.append(f"  {label}=INVALID ({e.__class__.__name__})")
+            continue
+        if not isinstance(data, dict):
+            lines.append(f"  {label}=INVALID (not a JSON object)")
+            continue
+        lines.append(f"  {label}=ok ({len(data)} keys)")
+    return lines
 
 
 def cmd_topic_set(cwd: str, name: str) -> int:
@@ -386,27 +540,9 @@ def cmd_topic_set(cwd: str, name: str) -> int:
     return 0
 
 
-def cmd_topic_get(cwd: str) -> int:
-    print(topic_for(cwd))
-    return 0
-
-
-def cmd_topic_unset(cwd: str) -> int:
-    data = _load(TOPICS_FILE)
-    if data.pop(os.path.abspath(cwd), None) is not None:
-        _save(TOPICS_FILE, data)
-        print(f"Unbound {os.path.abspath(cwd)}")
-    return 0
-
-
 def cmd_topic_list() -> int:
     for k, v in sorted(_load(TOPICS_FILE).items()):
         print(f"{k}\t{v}")
-    return 0
-
-
-def cmd_config_get(key: str) -> int:
-    print(_load(CONFIG_FILE).get(key, ""))
     return 0
 
 
@@ -432,23 +568,19 @@ def main(argv) -> int:
             return cmd_context(rest[0])
         if op == "merge-scan":
             return cmd_merge_scan(rest[0], rest[1])
-        if op == "topics":
-            return cmd_topics(rest[0])
-        if op == "config-dir":
-            print(CONFIG_DIR)
+        if op == "run":
+            if rest[0] not in HOOK_ANSWERED:
+                sys.stderr.write(f"llm-wiki-state: '{rest[0]}' is not hook-answered\n")
+                return 2
+            print(HOOK_ANSWERED[rest[0]](rest[1], _split_args(" ".join(rest[2:]))))
             return 0
-        if op == "config-check":
-            return cmd_config_check()
+        if op == "doctor":
+            print(doctor_report(rest[0]))
+            return 0
         if op == "topic-set":
             return cmd_topic_set(rest[0], rest[1])
-        if op == "topic-get":
-            return cmd_topic_get(rest[0])
-        if op == "topic-unset":
-            return cmd_topic_unset(rest[0])
         if op == "topic-list":
             return cmd_topic_list()
-        if op == "config-get":
-            return cmd_config_get(rest[0])
         if op == "config-set":
             return cmd_config_set(rest[0], rest[1])
     except IndexError:
