@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/llm-wiki-state\" dep-check",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/llm-wiki\" dep-check",
             "timeout": 10
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/llm-wiki-state\" resolve",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/llm-wiki\" resolve",
             "timeout": 10
           }
         ]

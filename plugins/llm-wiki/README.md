@@ -16,7 +16,7 @@ The original pattern is vendored verbatim at [`KARPATHY-LLM-WIKI.md`](./KARPATHY
   skill. Ad-hoc free-form chat _inside_ the vault is not a supported access path --
   the commands inject the conventions and resolve the active wiki for you; raw chat
   does not.
-- **Deterministic state.** A small CLI (`bin/llm-wiki-state`) and two hooks resolve
+- **Deterministic state.** A small CLI (`bin/llm-wiki`) and two hooks resolve
   the vault path and active topic and inject them into context, so commands never
   guess where you are.
 - **Hook-answered commands.** `list`, `set-vault`, `set-topic`, and `remove` need no
@@ -137,7 +137,7 @@ committed and not synced):
 - `config.json` -- `{ "vault_path": "..." }`
 - `topics.json` -- `{ "<abs-dir>": "<topic>" }`
 
-These are read/written by `bin/llm-wiki-state`, which the hooks and commands call. You
+These are read/written by `bin/llm-wiki`, which the hooks and commands call. You
 never invoke it directly.
 
 ## Obsidian integration

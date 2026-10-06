@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""llm-wiki state CLI.
+"""llm-wiki CLI.
 
 Single source of truth for machine-local state and hook logic. Used by the
 plugin's hooks AND by the operation commands (the model shells out to it). The
 user never types it directly.
 
 Self-locates the plugin root from its own path (this file lives at
-<plugin_root>/bin/llm-wiki-state), so it needs NO environment variables -- it
+<plugin_root>/bin/llm-wiki), so it needs NO environment variables -- it
 works identically whether invoked by a hook or by the agent's Bash tool.
 
 State (machine-local, outside any vault, so no gitignore needed):
@@ -44,7 +44,7 @@ PLUGIN_PREFIX = "llm-wiki:"
 
 
 def plugin_root() -> Path:
-    # <plugin_root>/bin/llm-wiki-state -> <plugin_root>
+    # <plugin_root>/bin/llm-wiki -> <plugin_root>
     return Path(os.path.realpath(__file__)).parent.parent
 
 
@@ -266,16 +266,16 @@ def merge_scan(src: Path, dst: Path) -> dict:
 def cmd_merge_scan(src_name: str, dst_name: str) -> int:
     vault = vault_path()
     if not vault:
-        sys.stderr.write("llm-wiki-state: no vault set\n")
+        sys.stderr.write("llm-wiki: no vault set\n")
         return 1
     root = Path(vault)
     src, dst = _topic_dir(root, src_name), _topic_dir(root, dst_name)
     for name, d in ((src_name, src), (dst_name, dst)):
         if d is None:
-            sys.stderr.write(f"llm-wiki-state: no topic '{name}' in {root}\n")
+            sys.stderr.write(f"llm-wiki: no topic '{name}' in {root}\n")
             return 1
     if src == dst:
-        sys.stderr.write("llm-wiki-state: cannot merge a topic into itself\n")
+        sys.stderr.write("llm-wiki: cannot merge a topic into itself\n")
         return 2
     print(json.dumps(merge_scan(src, dst), indent=2))
     return 0
@@ -570,7 +570,7 @@ def main(argv) -> int:
             return cmd_merge_scan(rest[0], rest[1])
         if op == "run":
             if rest[0] not in HOOK_ANSWERED:
-                sys.stderr.write(f"llm-wiki-state: '{rest[0]}' is not hook-answered\n")
+                sys.stderr.write(f"llm-wiki: '{rest[0]}' is not hook-answered\n")
                 return 2
             print(HOOK_ANSWERED[rest[0]](rest[1], _split_args(" ".join(rest[2:]))))
             return 0
@@ -584,9 +584,9 @@ def main(argv) -> int:
         if op == "config-set":
             return cmd_config_set(rest[0], rest[1])
     except IndexError:
-        sys.stderr.write(f"llm-wiki-state: missing argument for '{op}'\n")
+        sys.stderr.write(f"llm-wiki: missing argument for '{op}'\n")
         return 2
-    sys.stderr.write(f"llm-wiki-state: unknown subcommand '{op}'\n")
+    sys.stderr.write(f"llm-wiki: unknown subcommand '{op}'\n")
     return 2
 
 

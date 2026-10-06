@@ -6,7 +6,7 @@ argument-hint: (no arguments)
 Audit the active wiki. Follow the injected conventions. Bookkeeping is automatic;
 judgment stays with the user.
 
-1. Resolve context: `llm-wiki-state context "$PWD"`. Need a `topic`. Let `W = <vault_path>/<topic>`.
+1. Resolve context: `llm-wiki context "$PWD"`. Need a `topic`. Let `W = <vault_path>/<topic>`.
 2. Read `W/wiki/`. Build the `[[link]]` graph.
 3. Handle:
    - Index drift, and missing MANDATORY section headers (the headers each type's template declares) -> AUTO-FIX (these are mechanical).

@@ -6,7 +6,7 @@ argument-hint: <path|url> [--type <type>]
 Acquire a source and save it verbatim. Do NOT read its full content and do NOT
 create wiki pages (that is `compile`). No prompts; this is the default behavior.
 
-1. Resolve context: `llm-wiki-state context "$PWD"`. If `topic` is empty, stop and tell the user to run `/llm-wiki:set-topic`. Let `W = <vault_path>/<topic>`.
+1. Resolve context: `llm-wiki context "$PWD"`. If `topic` is empty, stop and tell the user to run `/llm-wiki:set-topic`. Let `W = <vault_path>/<topic>`.
 2. Parse `$ARGUMENTS`: the source is the file path or URL; an optional `--type <t>` sets the source-type (else auto-classify in step 4).
 3. Confirm existence WITHOUT reading full content:
    - File: `test -f "<path>"`; if missing, report and stop.

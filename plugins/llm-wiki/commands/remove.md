@@ -8,7 +8,7 @@ see this text, the hook did not run. Run this command, with the arguments inside
 single quotes, and write each `'` in them as `'\''`:
 
 ```
-llm-wiki-state run remove "$PWD" '$ARGUMENTS'
+llm-wiki run remove "$PWD" '$ARGUMENTS'
 ```
 
 Print its output verbatim, in a code block, with nothing else.

@@ -9,9 +9,9 @@ merge, so do NOT ask for confirmation. Resolve every collision yourself under th
 injected conventions. The raw source stays the only ground truth. Never settle a
 conflict by trusting either wiki's summary.
 
-1. Resolve context: `llm-wiki-state context "$PWD"`. Parse `$ARGUMENTS` as `<from> <into>`. Both are required. Let `F = <vault_path>/<from>` and `I = <vault_path>/<into>`. Read `<templates_path>/source-summary.md`, `concept.md`, and `person.md`.
+1. Resolve context: `llm-wiki context "$PWD"`. Parse `$ARGUMENTS` as `<from> <into>`. Both are required. Let `F = <vault_path>/<from>` and `I = <vault_path>/<into>`. Read `<templates_path>/source-summary.md`, `concept.md`, and `person.md`.
 2. Guard: `git -C "<vault_path>" status --porcelain -- "<from>" "<into>"` must print nothing. If it prints anything, stop and tell the user to commit or discard first. Record the recovery commit: `git -C "<vault_path>" rev-parse --short HEAD`.
-3. Inventory: run `llm-wiki-state merge-scan "<from>" "<into>"`. If it exits non-zero, report its error and stop. This output is the work list. Do not re-derive it.
+3. Inventory: run `llm-wiki merge-scan "<from>" "<into>"`. If it exits non-zero, report its error and stop. This output is the work list. Do not re-derive it.
    - `raw`: each `F` source with a `status` against `I`: `new`, `duplicate` (identical bytes), or `possible-duplicate` (same `source-uri` or same title, different bytes). A row with a `match` also gives `match_sidecar` and `match_compiled`. `name_clash` marks a file or sidecar name that already exists in `I/raw/documents/`.
    - `attachments`: each `F` attachment as `new`, `identical`, or `name-clash`.
    - `pages_new`, and `pages_colliding` as `{from, into}` pairs with the same file stem. Wikilinks resolve by stem, so a pair in different subfolders still collides.
@@ -34,6 +34,6 @@ conflict by trusting either wiki's summary.
    - Move each `unhandled` file to the same relative path under `I`. If that path exists, add the prefix `<from>-` to the file name.
    - `I/CLAUDE.md`: widen the domain paragraph to cover `<from>`. Append the topic-specific overrides from `F/CLAUDE.md`. Report each override that conflicts with an override in `I`.
    - `I/log.md`: append the `F` log entries verbatim, which are all lines after its header comment. Then append `## [YYYY-MM-DD] merge | <from> into <into>` with a one-line count summary, so the merge is the last entry.
-9. Remove `F`: run `git rm -r` on its remaining tracked files, then delete the directory. Rebind: for each line of `llm-wiki-state topic-list` with topic `<from>`, run `llm-wiki-state topic-set "<dir>" "<into>"`. If `command -v qmd` succeeds, run `qmd collection remove <from>`.
+9. Remove `F`: run `git rm -r` on its remaining tracked files, then delete the directory. Rebind: for each line of `llm-wiki topic-list` with topic `<from>`, run `llm-wiki topic-set "<dir>" "<into>"`. If `command -v qmd` succeeds, run `qmd collection remove <from>`.
 10. Commit to the vault repo (`merge: <from> into <into>`). Never push. If `command -v qmd` succeeds, run `qmd embed --collection <into>`.
 11. Report the counts: sources moved, deduplicated, and renamed. Pages moved, reconciled, renamed, and recompiled. Also report the contradictions flagged, the rebound directories, and the recovery commit.

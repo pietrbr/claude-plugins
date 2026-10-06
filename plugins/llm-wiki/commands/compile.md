@@ -6,7 +6,7 @@ argument-hint: [<path>]
 Turn uncompiled raw sources into wiki pages. Two passes: a WIKI-BLIND faithful
 read, then an informed merge. Follow the injected conventions exactly.
 
-1. Resolve context: `llm-wiki-state context "$PWD"`. Need a `topic`; if empty, stop and tell the user to run `/llm-wiki:set-topic`. Let `W = <vault_path>/<topic>`. Read `<templates_path>/source-summary.md` (and `concept.md`/`person.md` as needed).
+1. Resolve context: `llm-wiki context "$PWD"`. Need a `topic`; if empty, stop and tell the user to run `/llm-wiki:set-topic`. Let `W = <vault_path>/<topic>`. Read `<templates_path>/source-summary.md` (and `concept.md`/`person.md` as needed).
 2. Identify sources (no content reads):
    - If `$ARGUMENTS` is a path: that source + its `.meta.md` sidecar.
    - Else: read `W/raw/documents/*.meta.md`; select those with `compiled: false`.
