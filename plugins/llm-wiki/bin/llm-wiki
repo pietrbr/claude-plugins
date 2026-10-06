@@ -1067,7 +1067,7 @@ def merge_move(root: Path, src: Path, dst: Path, same: set, distinct: set) -> di
 
 def _log_entries(log: Path) -> str:
     text = log.read_text() if log.exists() else ""
-    m = re.search(r"^## \[", text, re.M)
+    m = re.search(r"^## \[\d{4}-\d{2}-\d{2}\]", NON_PROSE.sub(lambda c: " " * len(c.group(0)), text), re.M)
     return text[m.start():].rstrip() + "\n" if m else ""
 
 
