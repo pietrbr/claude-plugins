@@ -29,6 +29,10 @@ Subcommands:
                                 copy a source into raw/documents with a sidecar, log, commit
   log-commit <cwd> <op> <title> [<body>]
                                 append a log entry, commit only that topic, refresh qmd
+  compile-scan <cwd> [<source>...]
+                                list uncompiled (or named) sources with their sidecar frontmatter
+  backlinks <cwd> <page>...     list pages that mention a page's title without linking it
+  mark-compiled <cwd> <file>... set compiled: true in each source's sidecar
   merge-scan <from> <into>      classify <from>'s raw sources and pages against <into>
   topic-list                    print every binding
 """
@@ -113,6 +117,19 @@ def _conventions() -> str:
 
 
 UNCOMPILED = re.compile(r"^compiled:[ \t]*[\"']?false[\"']?[ \t]*$", re.M | re.I)
+FRONTMATTER = re.compile(r"\A---\n(.*?\n)---[ \t]*\n", re.S)
+
+
+def _frontmatter(text: str) -> str:
+    m = FRONTMATTER.match(text)
+    return m.group(1) if m else ""
+
+
+def _is_uncompiled(sidecar: Path) -> bool:
+    try:
+        return bool(UNCOMPILED.search(_frontmatter(sidecar.read_text(errors="ignore"))))
+    except OSError:
+        return False
 
 
 def _wiki_pages(topic_dir: Path) -> set:
@@ -128,10 +145,7 @@ def _topic_stats(topic_dir: Path) -> str:
         if not f.name.endswith(".meta.md"):
             sources += 1
             continue
-        try:
-            uncompiled += bool(UNCOMPILED.search(f.read_text(errors="ignore")))
-        except OSError:
-            pass
+        uncompiled += _is_uncompiled(f)
     return f"{sources} sources ({uncompiled} uncompiled), {len(_wiki_pages(topic_dir))} pages"
 
 
@@ -202,20 +216,22 @@ def _files(d: Path) -> list:
     return sorted(f for f in d.iterdir() if f.is_file() and not f.name.startswith(".")) if d.is_dir() else []
 
 
+def _raw_sources_meta(topic_dir: Path) -> dict:
+    return {f.name: _sidecar(f) for f in _files(topic_dir / "raw" / "documents") if not f.name.endswith(".meta.md")}
+
+
 def _raw_sources(topic_dir: Path) -> dict:
-    out = {}
-    for f in _files(topic_dir / "raw" / "documents"):
-        if f.name.endswith(".meta.md"):
-            continue
-        meta = _sidecar(f)
-        out[f.name] = {
-            "sha256": _sha256(f),
+    docs = topic_dir / "raw" / "documents"
+    return {
+        name: {
+            "sha256": _sha256(docs / name),
             "uri": _norm_uri(meta.get("source-uri", "")),
             "title": _norm_title(meta.get("title", "")),
             "sidecar": meta["sidecar"],
             "compiled": meta.get("compiled", ""),
         }
-    return out
+        for name, meta in _raw_sources_meta(topic_dir).items()
+    }
 
 
 def _classify_raw(a: dict, b: dict, dst_names: set) -> list:
@@ -671,6 +687,134 @@ def cmd_init(argv: list) -> str:
     return init_topic(a.cwd, a.topic, a.description)
 
 
+WIKILINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")
+NON_PROSE = re.compile(r"```.*?```|`[^`\n]*`|<!--.*?-->", re.S)
+INDEX_PAGE = "index.md"
+
+
+def _links(text: str) -> list:
+    return [m.group(1).strip() for m in WIKILINK.finditer(NON_PROSE.sub("", text))]
+
+
+def _page_name(link: str) -> str:
+    name = link.rsplit("/", 1)[-1]
+    return (name[:-3] if name.lower().endswith(".md") else name).lower()
+
+
+def _summary_pages(topic_dir: Path) -> dict:
+    """Map each source-file name to the wiki pages whose frontmatter cites it."""
+    out: dict = {}
+    for f in (topic_dir / "wiki").rglob("*.md"):
+        m = re.search(r"^source-file:[ \t]*(.*?)\s*$", _frontmatter(f.read_text(errors="ignore")), re.M)
+        if m and _unquote(m.group(1)):
+            out.setdefault(_unquote(m.group(1)), []).append(str(f.relative_to(topic_dir / "wiki")))
+    return out
+
+
+def compile_scan(topic_dir: Path, only: list) -> str:
+    docs = topic_dir / "raw" / "documents"
+    names = [f.name for f in _files(docs) if not f.name.endswith(".meta.md")]
+    summaries = _summary_pages(topic_dir)
+    if only:
+        picked = [Path(o).name for o in only]
+        unknown = [n for n in picked if n not in names]
+        if unknown:
+            raise CliError(f"no source {', '.join(unknown)} in {docs}")
+    else:
+        picked = [n for n in names if _is_uncompiled(docs / f"{Path(n).stem}.meta.md")]
+    orphans = [n for n in names if not (docs / f"{Path(n).stem}.meta.md").is_file()]
+    out = [f"# Compile scan: {topic_dir.name} ({_today()})", "",
+           f"{len(names)} sources, {len(picked)} selected.", ""]
+    for name in picked:
+        sidecar = docs / f"{Path(name).stem}.meta.md"
+        front = _frontmatter(sidecar.read_text(errors="ignore")) if sidecar.is_file() else ""
+        out += [f"## {name}", "Sidecar frontmatter (copy values verbatim, quotes included):", "```yaml"]
+        out += front.rstrip("\n").splitlines() if front else ["(no sidecar)"]
+        out += ["```", "Summary pages: " + (", ".join(f"`{p}`" for p in summaries.get(name, [])) or "none"), ""]
+    if orphans:
+        out += ["## Sources without a sidecar (run /llm-wiki:ingest on them first)"]
+        out += [f"- {n}" for n in orphans] + [""]
+    if not picked:
+        out.append("All sources are already compiled.")
+    return "\n".join(out).rstrip() + "\n"
+
+
+def _page_title(text: str, stem: str) -> str:
+    m = re.search(r"^# (.+?)\s*$", NON_PROSE.sub("", text), re.M)
+    return m.group(1) if m else stem
+
+
+def _body(text: str) -> str:
+    m = FRONTMATTER.match(text)
+    return NON_PROSE.sub("", text[m.end():] if m else text)
+
+
+def backlinks(topic_dir: Path, targets: list) -> str:
+    wiki = topic_dir / "wiki"
+    pages = {}
+    for f in sorted(wiki.rglob("*.md")):
+        body = _body(f.read_text(errors="ignore"))
+        pages[f] = (body, {_page_name(t) for t in WIKILINK.findall(body)})
+    by_name: dict = {}
+    for f in pages:
+        by_name.setdefault(f.stem.lower(), []).append(f)
+    out = []
+    for target in targets:
+        name = _page_name(target)
+        matches = sorted(by_name.get(name, []), key=lambda f: f.parent != wiki)
+        if not matches:
+            raise CliError(f"no page '{target}' in {wiki}")
+        page = matches[0]
+        words = {_page_title(pages[page][0], name), name.replace("-", " ")}
+        found = re.compile("|".join(r"(?<![\w-])" + re.escape(w) + r"(?![\w-])" for w in words), re.I)
+        hits = [str(f.relative_to(wiki)) for f, (body, links) in pages.items()
+                if f != page and f.name != INDEX_PAGE and name not in links and found.search(body)]
+        out.append(f"{name}: " + (", ".join(hits) or "none"))
+    return "\n".join(out)
+
+
+def mark_compiled(topic_dir: Path, files: list) -> str:
+    docs = topic_dir / "raw" / "documents"
+    plans = []
+    for name in files:
+        sidecar = docs / f"{Path(Path(name).name).stem}.meta.md"
+        if not sidecar.is_file():
+            raise CliError(f"nothing marked: no sidecar for '{name}' in {docs}")
+        text = sidecar.read_text()
+        m = FRONTMATTER.match(text)
+        if not m:
+            raise CliError(f"nothing marked: {sidecar.name} has no frontmatter")
+        front, n = re.subn(r"^compiled:.*$", "compiled: true", m.group(1), flags=re.M)
+        plans.append((sidecar, f"---\n{front if n else front + 'compiled: true' + chr(10)}---\n" + text[m.end():]))
+    for sidecar, text in plans:
+        sidecar.write_text(text)
+    return "marked compiled: " + ", ".join(sidecar.name for sidecar, _ in plans)
+
+
+def cmd_compile_scan(argv: list) -> str:
+    ap = _one_parser("compile-scan", "cwd")
+    ap.add_argument("sources", nargs="*")
+    a = ap.parse_args(argv)
+    _, topic_dir = _cwd_topic(a.cwd)
+    return compile_scan(topic_dir, a.sources)
+
+
+def cmd_backlinks(argv: list) -> str:
+    ap = _one_parser("backlinks", "cwd")
+    ap.add_argument("pages", nargs="+")
+    a = ap.parse_args(argv)
+    _, topic_dir = _cwd_topic(a.cwd)
+    return backlinks(topic_dir, a.pages)
+
+
+def cmd_mark_compiled(argv: list) -> str:
+    ap = _one_parser("mark-compiled", "cwd")
+    ap.add_argument("files", nargs="+")
+    a = ap.parse_args(argv)
+    _, topic_dir = _cwd_topic(a.cwd)
+    return mark_compiled(topic_dir, a.files)
+
+
 def doctor_report(cwd: str) -> str:
     def item(ok: bool, label: str, hint: str = "") -> str:
         return f"{'OK     ' if ok else 'MISSING'} {label}" + (f" -- {hint}" if hint and not ok else "")
@@ -803,6 +947,9 @@ ACTIONS = {
     "init": cmd_init,
     "ingest": cmd_ingest,
     "log-commit": cmd_log_commit,
+    "compile-scan": cmd_compile_scan,
+    "backlinks": cmd_backlinks,
+    "mark-compiled": cmd_mark_compiled,
     "merge-scan": cmd_merge_scan,
     "topic-list": cmd_topic_list,
 }
