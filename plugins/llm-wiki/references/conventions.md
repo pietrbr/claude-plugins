@@ -18,7 +18,7 @@ resolution hook and are the base layer; a vault-root `CLAUDE.md` then a topic
     the user expected work to happen;
   - command deliverables and deliberate state changes: a `query` answer; a
     `doctor`/`lint` report; the result of a config/setup command
-    (`set-vault`, `set-topic`, `init`) and `remove`'s recovery commit.
+    (`set-vault`, `set-topic`, `init`), `merge`'s report, and `remove`'s recovery commit.
 - The silence applies to the recurring content operations -- `ingest`,
   `compile`, `query` -- and their commit/bookkeeping noise, NOT to the
   deliverables above. (Exception: a single-source `compile` opens a brief

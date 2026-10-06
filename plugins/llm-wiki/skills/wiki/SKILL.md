@@ -30,6 +30,7 @@ Do NOT perform operations from here -- invoke the matching command.
 | Turn raw sources into wiki pages        | `/llm-wiki:compile [<path>]`                |
 | Ask the wiki a question                 | `/llm-wiki:query <question>`                |
 | Health-check the wiki                   | `/llm-wiki:lint`                            |
+| Merge one topic into another            | `/llm-wiki:merge <from> <into>`             |
 | Delete a topic (git-recoverable)        | `/llm-wiki:remove <topic>`                  |
 | Check environment/config                | `/llm-wiki:doctor`                          |
 

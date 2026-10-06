@@ -18,6 +18,7 @@ Subcommands:
   dep-check                     (SessionStart hook; reads hook JSON on stdin)
   context <cwd>                 print vault_path/topic/templates_path/etc. for a command
   topics <cwd>                  list vault topics with counts and bound directories
+  merge-scan <from> <into>      classify <from>'s raw sources and pages against <into>
   topic-set <cwd> <name>
   topic-get <cwd>
   topic-unset <cwd>
@@ -25,6 +26,7 @@ Subcommands:
   config-get <key>
   config-set <key> <value>
 """
+import hashlib
 import json
 import os
 import re
@@ -37,7 +39,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 TOPICS_FILE = CONFIG_DIR / "topics.json"
 
 # Commands that may run without a topic bound for the cwd (bootstrap).
-EXEMPT = {"init", "set-topic", "set-vault", "doctor", "list"}
+EXEMPT = {"init", "set-topic", "set-vault", "doctor", "list", "merge"}
 PLUGIN_PREFIX = "llm-wiki:"
 HOOK_ANSWERED = {"list"}
 
@@ -144,6 +146,140 @@ def topics_report(cwd: str) -> str:
         lines.append(f"! {name} -- missing from vault")
         lines.extend(f"    bound: {d}" for d in bindings[name])
     return "\n".join(lines)
+
+
+SCAFFOLD = {"log.md", "CLAUDE.md", "qmd.yml", ".gitignore"}
+HANDLED_DIRS = ("raw/documents", "raw/attachments", "wiki", "outputs/reports")
+
+
+def _unquote(value: str) -> str:
+    return value[1:-1] if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'" else value
+
+
+def _sidecar(doc: Path) -> dict:
+    meta = doc.with_name(doc.stem + ".meta.md")
+    fields = {"sidecar": meta.name if meta.exists() else ""}
+    if meta.exists():
+        for m in re.finditer(r"^([\w-]+):[ \t]*(.*?)\s*$", meta.read_text(errors="ignore"), re.M):
+            fields.setdefault(m.group(1), _unquote(m.group(2)))
+    return fields
+
+
+def _norm_uri(uri: str) -> str:
+    uri = uri.strip().lower().rstrip("/")
+    return re.sub(r"^(https?://)?(dx\.)?doi\.org/", "", uri)
+
+
+def _norm_title(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+
+
+def _sha256(f: Path) -> str:
+    return hashlib.sha256(f.read_bytes()).hexdigest()
+
+
+def _files(d: Path) -> list:
+    return sorted(f for f in d.iterdir() if f.is_file() and not f.name.startswith(".")) if d.is_dir() else []
+
+
+def _raw_sources(topic_dir: Path) -> dict:
+    out = {}
+    for f in _files(topic_dir / "raw" / "documents"):
+        if f.name.endswith(".meta.md"):
+            continue
+        meta = _sidecar(f)
+        out[f.name] = {
+            "sha256": _sha256(f),
+            "uri": _norm_uri(meta.get("source-uri", "")),
+            "title": _norm_title(meta.get("title", "")),
+            "sidecar": meta["sidecar"],
+            "compiled": meta.get("compiled", ""),
+        }
+    return out
+
+
+def _classify_raw(a: dict, b: dict, dst_names: set) -> list:
+    by_hash = {v["sha256"]: k for k, v in b.items()}
+    by_uri = {v["uri"]: k for k, v in b.items() if v["uri"]}
+    by_title = {v["title"]: k for k, v in b.items() if v["title"]}
+    rows = []
+    for name, v in a.items():
+        row = {"file": name, "sidecar": v["sidecar"], "compiled": v["compiled"]}
+        if v["sha256"] in by_hash:
+            row.update(status="duplicate", match=by_hash[v["sha256"]], basis="identical-bytes")
+        elif v["uri"] in by_uri:
+            row.update(status="possible-duplicate", match=by_uri[v["uri"]], basis="same-source-uri")
+        elif v["title"] in by_title:
+            row.update(status="possible-duplicate", match=by_title[v["title"]], basis="same-title")
+        else:
+            row.update(status="new")
+        if "match" in row:
+            row["match_sidecar"] = b[row["match"]]["sidecar"]
+            row["match_compiled"] = b[row["match"]]["compiled"]
+        row["name_clash"] = bool({name, v["sidecar"]} & dst_names)
+        rows.append(row)
+    return rows
+
+
+def _unhandled(topic_dir: Path) -> list:
+    out = []
+    for f in sorted(topic_dir.rglob("*")):
+        rel = f.relative_to(topic_dir).as_posix()
+        if not f.is_file() or f.name.startswith(".") or ".sqlite" in f.name or rel in SCAFFOLD:
+            continue
+        if not any(rel.startswith(d + "/") for d in HANDLED_DIRS):
+            out.append(rel)
+    return out
+
+
+def merge_scan(src: Path, dst: Path) -> dict:
+    dst_names = {f.name for f in _files(dst / "raw" / "documents")}
+    raw = _classify_raw(_raw_sources(src), _raw_sources(dst), dst_names)
+
+    stems_b = {Path(p).stem: p for p in _wiki_pages(dst)}
+    pages_new, pages_colliding = [], []
+    for page in sorted(_wiki_pages(src)):
+        stem = Path(page).stem
+        if stem in stems_b:
+            pages_colliding.append({"from": page, "into": stems_b[stem]})
+        else:
+            pages_new.append(page)
+
+    attach_b = {f.name: _sha256(f) for f in _files(dst / "raw" / "attachments")}
+    attachments = [
+        {"file": f.name, "status": "new" if f.name not in attach_b
+         else "identical" if attach_b[f.name] == _sha256(f) else "name-clash"}
+        for f in _files(src / "raw" / "attachments")
+    ]
+    reports_b = {f.name for f in _files(dst / "outputs" / "reports")}
+    return {
+        "from": str(src),
+        "into": str(dst),
+        "raw": raw,
+        "attachments": attachments,
+        "pages_new": pages_new,
+        "pages_colliding": pages_colliding,
+        "reports_colliding": [f.name for f in _files(src / "outputs" / "reports") if f.name in reports_b],
+        "unhandled": _unhandled(src),
+    }
+
+
+def cmd_merge_scan(src_name: str, dst_name: str) -> int:
+    vault = vault_path()
+    if not vault:
+        sys.stderr.write("llm-wiki-state: no vault set\n")
+        return 1
+    root = Path(vault).resolve()
+    src, dst = (root / src_name).resolve(), (root / dst_name).resolve()
+    for d in (src, dst):
+        if d.parent != root or not (d / "wiki").is_dir():
+            sys.stderr.write(f"llm-wiki-state: no topic at {d}\n")
+            return 1
+    if src == dst:
+        sys.stderr.write("llm-wiki-state: cannot merge a topic into itself\n")
+        return 2
+    print(json.dumps(merge_scan(src, dst), indent=2))
+    return 0
 
 
 # ---- subcommands ----------------------------------------------------------
@@ -294,6 +430,8 @@ def main(argv) -> int:
             return cmd_dep_check()
         if op == "context":
             return cmd_context(rest[0])
+        if op == "merge-scan":
+            return cmd_merge_scan(rest[0], rest[1])
         if op == "topics":
             return cmd_topics(rest[0])
         if op == "config-dir":

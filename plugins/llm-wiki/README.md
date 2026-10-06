@@ -66,6 +66,7 @@ Type `/llm-wiki:` and the menu filters to all commands with their argument hints
 | `/llm-wiki:compile [<path>]`   | Read raw sources and create/update wiki pages.               |
 | `/llm-wiki:query <question>`   | Answer from the wiki with citations; file the answer.        |
 | `/llm-wiki:lint`               | Audit for dead links, orphans, drift, stale syntheses.       |
+| `/llm-wiki:merge <from> <into>` | Merge a topic into another: dedupe sources, reconcile pages. |
 | `/llm-wiki:remove <topic>`     | Delete a topic (git-recoverable; no confirmation).           |
 | `/llm-wiki:doctor`             | Report environment + config (qmd, git, vault, topic).        |
 
