@@ -25,6 +25,8 @@ Subcommands:
                                 append a log entry, commit only that topic, refresh qmd
   ingest <topic> --type T --title=X [--uri=U] [--slug=S] -- <path>
                                 copy a source into raw/documents with a sidecar, log, commit
+  init <cwd> <topic> [--description=TEXT]
+                                scaffold a topic, commit, bind <cwd>, add the qmd collection
   topic-set <cwd> <name>
   topic-list
   config-set <key> <value>
@@ -321,6 +323,13 @@ def _is_cache(path: str) -> bool:
     return name == ".DS_Store" or ".sqlite" in name
 
 
+def _bind(cwd: str, name: str) -> str:
+    data = _load(TOPICS_FILE)
+    data[os.path.abspath(cwd)] = name
+    _save(TOPICS_FILE, data)
+    return os.path.abspath(cwd)
+
+
 def run_list(cwd: str, args: list) -> str:
     return topics_report(cwd)
 
@@ -348,9 +357,7 @@ def run_set_topic(cwd: str, args: list) -> str:
         return "Usage: /llm-wiki:set-topic <topic>\nTopics: " + (", ".join(names) or "(none)")
     if args[0] not in names:
         return f"No topic '{args[0]}' in {vault}. Run /llm-wiki:init {args[0]} to create it."
-    data = _load(TOPICS_FILE)
-    data[os.path.abspath(cwd)] = args[0]
-    _save(TOPICS_FILE, data)
+    _bind(cwd, args[0])
     return f"This directory is now bound to topic '{args[0]}'."
 
 
@@ -577,6 +584,99 @@ def cmd_ingest(argv: list) -> str:
     return ingest(a.topic, a.path, a.type, a.title, a.uri, a.slug)
 
 
+def _template(name: str, topic: str) -> str:
+    text = (references_dir() / "templates" / name).read_text()
+    return text.replace("<topic>", topic).replace("Last updated: YYYY-MM-DD", f"Last updated: {_today()}")
+
+
+CLAUDE_MD = """# {topic} wiki
+
+{description}
+
+Page templates and conventions are provided by the llm-wiki plugin and injected
+by the resolution hook; topic-specific overrides, if any, go below.
+"""
+DESCRIPTION_PLACEHOLDER = "<!-- domain description: one paragraph -->"
+
+
+TOPIC_NAME = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+TOPIC_DIRS = ("raw/documents", "raw/attachments", "wiki/queries", "outputs/reports")
+TOPIC_GITIGNORE = ".DS_Store\n*.sqlite\n*.sqlite-wal\n*.sqlite-shm\n"
+
+
+def _scaffold(topic_dir: Path, name: str, description: str) -> None:
+    for sub in TOPIC_DIRS:
+        (topic_dir / sub).mkdir(parents=True)
+    (topic_dir / "wiki" / "index.md").write_text(_template("index.md", name))
+    (topic_dir / "log.md").write_text(_template("log.md", name))
+    (topic_dir / "qmd.yml").write_text(
+        f'collections:\n  {name}:\n    path: ./wiki\n    pattern: "**/*.md"\n'
+    )
+    (topic_dir / ".gitignore").write_text(TOPIC_GITIGNORE)
+    (topic_dir / "CLAUDE.md").write_text(
+        CLAUDE_MD.format(topic=name, description=description.strip() or DESCRIPTION_PLACEHOLDER)
+    )
+
+
+def init_topic(cwd: str, name: str, description: str) -> str:
+    vault = vault_path()
+    if not vault:
+        raise CliError("no vault set; run /llm-wiki:set-vault <path>")
+    if not TOPIC_NAME.fullmatch(name):
+        raise CliError(f"topic name '{name}' must be lowercase kebab-case")
+    if shutil.which("git") is None:
+        raise CliError("git is required")
+    root = Path(vault).resolve()
+    topic_dir = root / name
+    if topic_dir.exists() or topic_dir.is_symlink():
+        raise CliError(f"{topic_dir} already exists; use /llm-wiki:remove {name} first")
+    root.mkdir(parents=True, exist_ok=True)
+    if not _is_git_repo(root):
+        _git(root, "init", "-q")
+    if not _is_git_repo(root):
+        raise CliError(f"git init failed in {root}")
+    try:
+        _scaffold(topic_dir, name, description)
+        lines = [_log_commit(root, topic_dir, "init", f"{name} wiki",
+                             "Scaffolded raw/wiki/outputs, index, log, qmd.yml, CLAUDE.md.")]
+    except Exception:
+        shutil.rmtree(topic_dir, ignore_errors=True)
+        raise
+    try:
+        lines.append(f"Bound {_bind(cwd, name)} -> {name}")
+    except OSError as e:
+        raise CliError(f"topic {name} was created but not bound ({e}); run /llm-wiki:set-topic {name}")
+    lines.append(_qmd_index(topic_dir))
+    if not description.strip():
+        lines.append(f"CLAUDE.md needs a domain description: {topic_dir / 'CLAUDE.md'}")
+    lines.append("Next: /llm-wiki:ingest <path|url>")
+    return "\n".join(line for line in lines if line)
+
+
+def _qmd_index(topic_dir: Path) -> str:
+    name = topic_dir.name
+    if not shutil.which("qmd"):
+        return ""
+    if not _qmd_has(name):
+        added = subprocess.run(["qmd", "collection", "add", str(topic_dir / "wiki"), "--name", name],
+                               capture_output=True, text=True)
+        if added.returncode != 0:
+            return f"warning: qmd collection add {name} failed: " + (added.stderr or added.stdout).strip()[-300:]
+    embedded = subprocess.run(["qmd", "embed", "--collection", name], capture_output=True, text=True)
+    if embedded.returncode != 0:
+        return f"warning: qmd embed {name} failed: " + (embedded.stderr or embedded.stdout).strip()[-300:]
+    return ""
+
+
+def cmd_init(argv: list) -> str:
+    ap = argparse.ArgumentParser(prog="llm-wiki init")
+    ap.add_argument("cwd")
+    ap.add_argument("topic")
+    ap.add_argument("--description", default="")
+    a = ap.parse_args(argv)
+    return init_topic(a.cwd, a.topic, a.description)
+
+
 HOOK_ANSWERED = {
     "list": run_list,
     "set-vault": run_set_vault,
@@ -743,10 +843,7 @@ def cmd_run(argv: list) -> str:
 
 def cmd_topic_set(argv: list) -> str:
     a = _one_parser("topic-set", "cwd", "topic").parse_args(argv)
-    data = _load(TOPICS_FILE)
-    data[os.path.abspath(a.cwd)] = a.topic
-    _save(TOPICS_FILE, data)
-    return f"Bound {os.path.abspath(a.cwd)} -> {a.topic}"
+    return f"Bound {_bind(a.cwd, a.topic)} -> {a.topic}"
 
 
 def cmd_topic_list(argv: list) -> str:
@@ -771,6 +868,7 @@ ACTIONS = {
     "merge-scan": cmd_merge_scan,
     "log-commit": cmd_log_commit,
     "ingest": cmd_ingest,
+    "init": cmd_init,
     "topic-set": cmd_topic_set,
     "topic-list": cmd_topic_list,
     "config-set": cmd_config_set,

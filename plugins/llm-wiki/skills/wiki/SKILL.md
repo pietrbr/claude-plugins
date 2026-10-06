@@ -23,7 +23,7 @@ Do NOT perform operations from here -- invoke the matching command.
 | Intent                                  | Command                                     |
 | --------------------------------------- | ------------------------------------------- |
 | Set where wikis live (once per machine) | `/llm-wiki:set-vault <path>`                |
-| Create a new topic                      | `/llm-wiki:init <topic>`                    |
+| Create a new topic                      | `/llm-wiki:init <topic> ["<description>"]`  |
 | Bind the current directory to a topic   | `/llm-wiki:set-topic <topic>`               |
 | List topics and bound directories       | `/llm-wiki:list`                            |
 | Save a source (verbatim, no pages yet)  | `/llm-wiki:ingest <path\|url> [--type <t>]` |

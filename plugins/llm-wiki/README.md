@@ -60,19 +60,19 @@ Type `/llm-wiki:` and the menu filters to all commands with their argument hints
 
 ## Commands
 
-| Command                        | What it does                                                 |
-| ------------------------------ | ------------------------------------------------------------ |
-| `/llm-wiki:set-vault <path>`   | Set where all wikis live (machine-local, once).              |
-| `/llm-wiki:init <topic>`       | Create a topic and bind the current directory to it.         |
-| `/llm-wiki:set-topic <topic>`  | Bind the current directory to an existing topic.             |
-| `/llm-wiki:list`               | List topics, their size, and bound directories (instant).    |
-| `/llm-wiki:ingest <path\|url>` | Save a source to `raw/` verbatim (PDFs preserved). No pages. |
-| `/llm-wiki:compile [<path>]`   | Read raw sources and create/update wiki pages.               |
-| `/llm-wiki:query <question>`   | Answer from the wiki with citations; file the answer.        |
-| `/llm-wiki:lint`               | Audit for dead links, orphans, drift, stale syntheses.       |
+| Command                         | What it does                                                 |
+| ------------------------------- | ------------------------------------------------------------ |
+| `/llm-wiki:set-vault <path>`    | Set where all wikis live (machine-local, once).              |
+| `/llm-wiki:init <topic> ["<description>"]` | Create a topic and bind the current directory to it.         |
+| `/llm-wiki:set-topic <topic>`   | Bind the current directory to an existing topic.             |
+| `/llm-wiki:list`                | List topics, their size, and bound directories (instant).    |
+| `/llm-wiki:ingest <path\|url>`  | Save a source to `raw/` verbatim (PDFs preserved). No pages. |
+| `/llm-wiki:compile [<path>]`    | Read raw sources and create/update wiki pages.               |
+| `/llm-wiki:query <question>`    | Answer from the wiki with citations; file the answer.        |
+| `/llm-wiki:lint`                | Audit for dead links, orphans, drift, stale syntheses.       |
 | `/llm-wiki:merge <from> <into>` | Merge a topic into another: dedupe sources, reconcile pages. |
-| `/llm-wiki:remove <topic>...`  | Delete topics (git-recoverable; no confirmation).            |
-| `/llm-wiki:doctor`             | Report environment + config (qmd, git, vault, topic).        |
+| `/llm-wiki:remove <topic>...`   | Delete topics (git-recoverable; no confirmation).            |
+| `/llm-wiki:doctor`              | Report environment + config (qmd, git, vault, topic).        |
 
 ## Key concepts
 
