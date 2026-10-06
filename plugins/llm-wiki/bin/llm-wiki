@@ -33,6 +33,7 @@ Subcommands:
                                 list uncompiled (or named) sources with their sidecar frontmatter
   backlinks <cwd> <page>...     list pages that mention a page's title without linking it
   mark-compiled <cwd> <file>... set compiled: true in each source's sidecar
+  lint-scan <cwd>               report dead links, orphans, index drift, missing template headers
   merge-scan <from> <into>      classify <from>'s raw sources and pages against <into>
   topic-list                    print every binding
 """
@@ -739,6 +740,19 @@ def compile_scan(topic_dir: Path, only: list) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
+def _load_pages(wiki: Path) -> tuple:
+    """Return ({rel: text}, {lowercase name: [rels, wiki root first]})."""
+    pages = {str(f.relative_to(wiki)): f.read_text(errors="ignore") for f in sorted(wiki.rglob("*.md"))}
+    by_name: dict = {}
+    for rel in sorted(pages, key=lambda r: ("/" in r, r)):
+        by_name.setdefault(_page_name(rel), []).append(rel)
+    return pages, by_name
+
+
+def _link_name(target: str) -> str:
+    return _page_name(target.rstrip("\\").strip())
+
+
 def _page_title(text: str, stem: str) -> str:
     m = re.search(r"^# (.+?)\s*$", NON_PROSE.sub("", text), re.M)
     return m.group(1) if m else stem
@@ -751,24 +765,21 @@ def _body(text: str) -> str:
 
 def backlinks(topic_dir: Path, targets: list) -> str:
     wiki = topic_dir / "wiki"
+    texts, by_name = _load_pages(wiki)
     pages = {}
-    for f in sorted(wiki.rglob("*.md")):
-        body = _body(f.read_text(errors="ignore"))
-        pages[f] = (body, {_page_name(t) for t in WIKILINK.findall(body)})
-    by_name: dict = {}
-    for f in pages:
-        by_name.setdefault(f.stem.lower(), []).append(f)
+    for rel, text in texts.items():
+        body = _body(text)
+        pages[rel] = (body, {_link_name(t) for t in WIKILINK.findall(body)})
     out = []
     for target in targets:
         name = _page_name(target)
-        matches = sorted(by_name.get(name, []), key=lambda f: f.parent != wiki)
-        if not matches:
+        if name not in by_name:
             raise CliError(f"no page '{target}' in {wiki}")
-        page = matches[0]
+        page = by_name[name][0]
         words = {_page_title(pages[page][0], name), name.replace("-", " ")}
         found = re.compile("|".join(r"(?<![\w-])" + re.escape(w) + r"(?![\w-])" for w in words), re.I)
-        hits = [str(f.relative_to(wiki)) for f, (body, links) in pages.items()
-                if f != page and f.name != INDEX_PAGE and name not in links and found.search(body)]
+        hits = [rel for rel, (body, links) in pages.items()
+                if rel != page and rel != INDEX_PAGE and name not in links and found.search(body)]
         out.append(f"{name}: " + (", ".join(hits) or "none"))
     return "\n".join(out)
 
@@ -813,6 +824,78 @@ def cmd_mark_compiled(argv: list) -> str:
     a = ap.parse_args(argv)
     _, topic_dir = _cwd_topic(a.cwd)
     return mark_compiled(topic_dir, a.files)
+
+
+PAGE_TEMPLATES = {"source-summary": "source-summary.md", "concept": "concept.md",
+                  "person": "person.md", "query": "query.md"}
+QUERIES_DIR = "queries/"
+
+
+def _frontmatter_type(text: str) -> str:
+    t = re.search(r"^type:[ \t]*(\S+)", _frontmatter(text), re.M)
+    return _unquote(t.group(1)) if t else ""
+
+
+def _template_headers(template: str) -> list:
+    text = NON_PROSE.sub("", (references_dir() / "templates" / template).read_text())
+    return [re.split(r" -- |<", line, maxsplit=1)[0].rstrip() for line in text.splitlines() if line.startswith("## ")]
+
+
+def lint_scan(topic_dir: Path) -> str:
+    wiki = topic_dir / "wiki"
+    pages, by_stem = _load_pages(wiki)
+    files = {f.name.lower() for f in (topic_dir / "raw").rglob("*") if f.is_file()}
+    headers = {t: _template_headers(name) for t, name in PAGE_TEMPLATES.items()}
+    index_name = _page_name(INDEX_PAGE)
+
+    dead, inbound, index_links = [], {rel: 0 for rel in pages}, set()
+    missing_headers, untyped = [], []
+    for rel, text in pages.items():
+        for target in _links(text):
+            stem = _link_name(target)
+            if stem not in by_stem:
+                if target.rsplit("/", 1)[-1].rstrip("\\").strip().lower() not in files:
+                    dead.append((target.rstrip("\\"), rel))
+                continue
+            if rel == INDEX_PAGE:
+                index_links.add(by_stem[stem][0])
+                continue
+            hit = by_stem[stem][0]
+            if hit != rel and stem != index_name:
+                inbound[hit] += 1
+        if rel == INDEX_PAGE:
+            continue
+        kind = _frontmatter_type(text)
+        if kind not in headers:
+            untyped.append((rel, kind))
+            continue
+        present = [line.rstrip() for line in NON_PROSE.sub("", text).splitlines() if line.startswith("## ")]
+        for h in headers[kind]:
+            if not any(p == h or p.startswith(h + " ") for p in present):
+                missing_headers.append((rel, kind, h))
+
+    content = [rel for rel in pages if rel != INDEX_PAGE and not rel.startswith(QUERIES_DIR)]
+    orphans = [rel for rel in content if inbound[rel] == 0]
+    unindexed = [rel for rel in content if rel not in index_links]
+    ambiguous = {stem: rels for stem, rels in by_stem.items() if len(rels) > 1}
+
+    def section(title: str, rows: list) -> list:
+        return [f"## {title} ({len(rows)})"] + (rows or ["- none"]) + [""]
+
+    out = [f"# Lint scan: {topic_dir.name} ({_today()})", "",
+           f"{len(pages)} pages, {sum(inbound.values())} links between content pages.", ""]
+    out += section("Dead links", [f"- `[[{t}]]` in `{rel}`" for t, rel in dead])
+    out += section("Orphan pages (no inbound links except from the index)", [f"- `{rel}`" for rel in orphans])
+    out += section("Pages missing from index.md", [f"- `{rel}`" for rel in unindexed])
+    out += section("Missing template headers", [f"- `{rel}` ({kind}): `{h}`" for rel, kind, h in missing_headers])
+    out += section("Pages without a known frontmatter type", [f"- `{rel}`: `{kind or '(none)'}`" for rel, kind in untyped])
+    out += section("Ambiguous page names", [f"- `{stem}`: " + ", ".join(f"`{r}`" for r in rels) for stem, rels in ambiguous.items()])
+    return "\n".join(out).rstrip() + "\n"
+
+
+def cmd_lint_scan(argv: list) -> str:
+    _, topic_dir = _cwd_topic(_one_parser("lint-scan", "cwd").parse_args(argv).cwd)
+    return lint_scan(topic_dir)
 
 
 def doctor_report(cwd: str) -> str:
@@ -950,6 +1033,7 @@ ACTIONS = {
     "compile-scan": cmd_compile_scan,
     "backlinks": cmd_backlinks,
     "mark-compiled": cmd_mark_compiled,
+    "lint-scan": cmd_lint_scan,
     "merge-scan": cmd_merge_scan,
     "topic-list": cmd_topic_list,
 }
