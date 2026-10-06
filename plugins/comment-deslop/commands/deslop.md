@@ -40,6 +40,8 @@ edits a file -- the edits in step 3 are yours.
    constraint, a spec reference or a reason, so do not re-open that question. If
    one genuinely must stay, report it as a gap in the allowlist rather than
    keeping it quietly.
+   Skip findings in files kept as references to an outside source (downloaded
+   scripts, vendored or upstream copies): edit them only to match their source.
 
 5. If the report has a `comment-deslop advisory:` block, **repeat it to the user
    verbatim and stop there**. Those rules are excluded by design; do not fix them,

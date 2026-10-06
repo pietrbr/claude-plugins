@@ -55,6 +55,9 @@ If a flagged comment genuinely must stay, that is a gap in the allowlist. Say so
 to the user instead of keeping it quietly, and never claim it is "justified" to
 dismiss the finding.
 
+Skip findings in files kept as references to an outside source (downloaded
+scripts, vendored or upstream copies): edit them only to match their source.
+
 `/deslop` carries the per-rule fix table. Follow it rather than improvising.
 
 `/deslop --llm` is a different job: the engine prints the comments no rule
