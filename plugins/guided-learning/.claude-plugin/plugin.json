@@ -1,6 +1,6 @@
 {
   "name": "guided-learning",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A hands-on teaching posture for learning any procedural system by operating it yourself, with Claude as lab instructor -- scopes each step, runs read-only checks alongside you, and explains the output.",
   "author": {
     "name": "pietrbr"
