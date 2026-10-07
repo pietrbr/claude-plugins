@@ -1,0 +1,21 @@
+#!/bin/sh
+# Claude Code caches a plugin by its version, so a change without a bump never reaches installs.
+
+status=0
+plugins=$(git diff --cached --name-only -- plugins/ |
+  grep -v '^plugins/[^/]*/tests/' |
+  cut -d/ -f2 | sort -u)
+
+for plugin in $plugins; do
+  manifest="plugins/$plugin/.claude-plugin/plugin.json"
+  if git diff --cached -U0 -- "$manifest" | grep -q '^+ *"version"'; then
+    continue
+  fi
+  echo "pre-commit: $plugin changed but $manifest has no version bump" >&2
+  status=1
+done
+
+if [ "$status" -ne 0 ]; then
+  echo "pre-commit: bump the version, or commit with --no-verify" >&2
+fi
+exit "$status"
