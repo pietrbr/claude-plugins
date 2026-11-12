@@ -37,7 +37,7 @@
     {
       "name": "session-summary",
       "source": "./plugins/session-summary",
-      "description": "Reorient inside a long or wandering session: /summary prints a short, schematic summary of the current conversation -- status, original problem, decisions & drift, open items, and the next step. Chat-only."
+      "description": "/summary prints a short, sectioned report of the current session for a colleague with no context: the original problem, any scope drift, what was done, and the open items. Chat-only."
     },
     {
       "name": "comment-deslop",

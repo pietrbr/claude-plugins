@@ -1,7 +1,7 @@
 {
   "name": "session-summary",
-  "version": "0.1.0",
-  "description": "Reorient inside a long or wandering session: /summary prints a short, schematic summary of the current conversation -- status now, original problem, decisions & drift, open items, and the next step. Chat-only; writes nothing.",
+  "version": "0.2.0",
+  "description": "/summary prints a short, sectioned report of the current session for a colleague with no context: the original problem, any scope drift, what was done, and the open items. Chat-only.",
   "author": {
     "name": "pietrbr"
   }
